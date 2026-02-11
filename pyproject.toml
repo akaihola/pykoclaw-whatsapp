@@ -3,7 +3,10 @@ name = "pykoclaw-whatsapp"
 version = "0.1.0"
 description = "WhatsApp plugin for pykoclaw"
 requires-python = ">=3.12"
-dependencies = ["pykoclaw @ file:///home/akaihola/prg/pykoclaw/pykoclaw", "neonize", "click"]
+dependencies = ["pykoclaw", "neonize", "click"]
+
+[tool.uv.sources]
+pykoclaw = { workspace = true }
 
 [project.entry-points."pykoclaw.plugins"]
 whatsapp = "pykoclaw_whatsapp:WhatsAppPlugin"
