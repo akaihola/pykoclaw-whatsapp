@@ -69,10 +69,7 @@ class WhatsAppConnection:
         )
 
         self._config.auth_dir.mkdir(parents=True, exist_ok=True)
-        self._client = NewClient(
-            "pykoclaw-whatsapp",
-            database=str(self._config.session_db),
-        )
+        self._client = NewClient("pykoclaw-whatsapp")
 
         self._register_events(self._client)
 
@@ -92,8 +89,8 @@ class WhatsAppConnection:
             self._loop.close()
 
     def _register_events(self, client: NewClient) -> None:
-        @client.event(QRCodeEv)
-        def on_qr(_client: NewClient, event: QRCodeEv) -> None:
+        @client.event(QREv)
+        def on_qr(_client: NewClient, event: QREv) -> None:
             log.warning(
                 "QR code received — run 'pykoclaw whatsapp auth' to authenticate"
             )
