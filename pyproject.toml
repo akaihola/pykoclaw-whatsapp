@@ -1,0 +1,13 @@
+[project]
+name = "pykoclaw-whatsapp"
+version = "0.1.0"
+description = "WhatsApp plugin for pykoclaw"
+requires-python = ">=3.12"
+dependencies = ["pykoclaw @ file:///home/akaihola/prg/pykoclaw/pykoclaw", "neonize", "click"]
+
+[project.entry-points."pykoclaw.plugins"]
+whatsapp = "pykoclaw_whatsapp:WhatsAppPlugin"
+
+[build-system]
+requires = ["uv_build>=0.9.2,<0.10.0"]
+build-backend = "uv_build"
