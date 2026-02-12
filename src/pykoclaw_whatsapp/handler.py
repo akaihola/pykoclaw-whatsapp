@@ -189,7 +189,7 @@ class MessageHandler:
                 return
 
             timestamp = datetime.fromtimestamp(
-                info.Timestamp, tz=timezone.utc
+                info.Timestamp / 1000, tz=timezone.utc
             ).isoformat()
             is_from_me = source.IsFromMe
             sender = info.Pushname or Jid2String(source.Sender)
