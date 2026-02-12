@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import signal
 import sqlite3
 import threading
@@ -33,6 +34,24 @@ from .handler import (
 from .queue import OutgoingQueue
 
 log = logging.getLogger(__name__)
+
+
+def _extract_reply(text: str) -> str | None:
+    """Extract text wrapped in <reply> tags from agent output.
+
+    Uses allowlist-based filtering: only text explicitly wrapped in <reply> tags
+    is returned. All other text (internal monologue, reasoning) is discarded.
+
+    Args:
+        text: Raw agent output potentially containing <reply> tags.
+
+    Returns:
+        Joined non-empty reply content, or None if no valid replies found.
+    """
+    matches = re.findall(r"<reply>(.*?)</reply>", text, re.DOTALL)
+    stripped = [m.strip() for m in matches]
+    filtered = [m for m in stripped if m]
+    return "\n".join(filtered) if filtered else None
 
 
 class WhatsAppConnection:
@@ -132,6 +151,11 @@ class WhatsAppConnection:
         base = _dedent(
             f"""\
             You are {trigger}, an ambient participant in a WhatsApp chat ({chat_jid}).
+            
+            When you choose to reply, wrap your ENTIRE reply in `<reply>` tags. Text \
+            outside these tags will NOT be delivered to the chat. Tool-call reasoning \
+            and internal notes must NOT be wrapped in `<reply>` tags.
+            
             You observe conversations silently. In the vast majority of batches, you \
             should produce NO text output. Err heavily toward silence.
             Only reply when: (a) you are directly addressed by name or @mention, \
@@ -151,7 +175,7 @@ class WhatsAppConnection:
         if hard_mention:
             base += (
                 "\n\nThis batch contains a direct @mention of your name "
-                "— you MUST reply to it."
+                "— you MUST reply to it using `<reply>` tags."
             )
         return base
 
@@ -196,9 +220,10 @@ class WhatsAppConnection:
                     pass
 
             full_response = "\n".join(response_parts).strip()
-            if full_response:
+            extracted = _extract_reply(full_response)
+            if extracted:
                 jid = self._build_jid(chat_jid)
-                self._outgoing_queue.send(self._client, jid, full_response)
+                self._outgoing_queue.send(self._client, jid, extracted)
                 log.info("Agent response sent to %s", chat_jid)
             else:
                 log.info("Agent chose silence for %s", chat_jid)
