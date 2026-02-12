@@ -5,13 +5,12 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 from textwrap import dedent
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import Mock, patch
 
 import pytest
 
 pytest.importorskip("neonize")
 
-from pykoclaw.models import Conversation
 from pykoclaw_whatsapp.connection import WhatsAppConnection
 
 
@@ -83,7 +82,7 @@ def _seed_messages(db: sqlite3.Connection, chat_jid: str, count: int = 1) -> Non
 async def _fake_agent_text(*_args: object, **kwargs: object):
     from pykoclaw.agent_core import AgentMessage
 
-    yield AgentMessage(type="text", text="Hello from agent")
+    yield AgentMessage(type="text", text="<reply>Hello from agent</reply>")
     yield AgentMessage(type="result", session_id="ses_new")
 
 
@@ -97,6 +96,23 @@ async def _fake_agent_empty_text(*_args: object, **kwargs: object):
     from pykoclaw.agent_core import AgentMessage
 
     yield AgentMessage(type="text", text="")
+    yield AgentMessage(type="result", session_id="ses_new")
+
+
+async def _fake_agent_monologue(*_args: object, **kwargs: object):
+    from pykoclaw.agent_core import AgentMessage
+
+    yield AgentMessage(type="text", text="This is internal monologue without tags")
+    yield AgentMessage(type="result", session_id="ses_new")
+
+
+async def _fake_agent_tagged_and_monologue(*_args: object, **kwargs: object):
+    from pykoclaw.agent_core import AgentMessage
+
+    yield AgentMessage(
+        type="text",
+        text="Internal reasoning here\n<reply>This is the reply</reply>\nMore reasoning",
+    )
     yield AgentMessage(type="result", session_id="ses_new")
 
 
@@ -236,3 +252,155 @@ async def test_system_prompt_includes_trigger_name(
 
         call_kwargs = mock_query.call_args[1]
         assert "Andy" in call_kwargs["system_prompt"]
+
+
+@pytest.mark.asyncio
+async def test_monologue_filtered(
+    db: sqlite3.Connection, connection: WhatsAppConnection
+) -> None:
+    """Verify that untagged text (internal monologue) is NOT sent."""
+    chat_jid = "123@s.whatsapp.net"
+    _seed_messages(db, chat_jid)
+
+    with patch(
+        "pykoclaw_whatsapp.connection.query_agent",
+        side_effect=_fake_agent_monologue,
+    ):
+        connection._outgoing_queue = Mock()
+        await connection._handle_agent_trigger(chat_jid)
+
+        connection._outgoing_queue.send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_reply_tags_extracted(
+    db: sqlite3.Connection, connection: WhatsAppConnection
+) -> None:
+    """Verify that tagged text is extracted and sent."""
+    chat_jid = "123@s.whatsapp.net"
+    _seed_messages(db, chat_jid)
+
+    with patch(
+        "pykoclaw_whatsapp.connection.query_agent", side_effect=_fake_agent_text
+    ):
+        connection._outgoing_queue = Mock()
+        await connection._handle_agent_trigger(chat_jid)
+
+        connection._outgoing_queue.send.assert_called_once()
+        sent_text = connection._outgoing_queue.send.call_args[0][2]
+        assert "Hello from agent" in sent_text
+        assert "<reply>" not in sent_text
+
+
+@pytest.mark.asyncio
+async def test_multiple_reply_tags(
+    db: sqlite3.Connection, connection: WhatsAppConnection
+) -> None:
+    """Verify that multiple tags are joined correctly."""
+    chat_jid = "123@s.whatsapp.net"
+    _seed_messages(db, chat_jid)
+
+    async def _fake_agent_multiple_tags(*_args: object, **kwargs: object):
+        from pykoclaw.agent_core import AgentMessage
+
+        yield AgentMessage(
+            type="text",
+            text="<reply>First reply</reply>\n<reply>Second reply</reply>",
+        )
+        yield AgentMessage(type="result", session_id="ses_new")
+
+    with patch(
+        "pykoclaw_whatsapp.connection.query_agent",
+        side_effect=_fake_agent_multiple_tags,
+    ):
+        connection._outgoing_queue = Mock()
+        await connection._handle_agent_trigger(chat_jid)
+
+        connection._outgoing_queue.send.assert_called_once()
+        sent_text = connection._outgoing_queue.send.call_args[0][2]
+        assert "First reply" in sent_text
+        assert "Second reply" in sent_text
+
+
+@pytest.mark.asyncio
+async def test_whitespace_only_reply_tag(
+    db: sqlite3.Connection, connection: WhatsAppConnection
+) -> None:
+    """Verify that whitespace-only tags are treated as silence."""
+    chat_jid = "123@s.whatsapp.net"
+    _seed_messages(db, chat_jid)
+
+    async def _fake_agent_whitespace_reply(*_args: object, **kwargs: object):
+        from pykoclaw.agent_core import AgentMessage
+
+        yield AgentMessage(type="text", text="<reply>   \n  \t  </reply>")
+        yield AgentMessage(type="result", session_id="ses_new")
+
+    with patch(
+        "pykoclaw_whatsapp.connection.query_agent",
+        side_effect=_fake_agent_whitespace_reply,
+    ):
+        connection._outgoing_queue = Mock()
+        await connection._handle_agent_trigger(chat_jid)
+
+        connection._outgoing_queue.send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_reply_with_newlines(
+    db: sqlite3.Connection, connection: WhatsAppConnection
+) -> None:
+    """Verify that multiline tagged content works correctly."""
+    chat_jid = "123@s.whatsapp.net"
+    _seed_messages(db, chat_jid)
+
+    async def _fake_agent_multiline_reply(*_args: object, **kwargs: object):
+        from pykoclaw.agent_core import AgentMessage
+
+        yield AgentMessage(
+            type="text",
+            text="<reply>Line 1\nLine 2\nLine 3</reply>",
+        )
+        yield AgentMessage(type="result", session_id="ses_new")
+
+    with patch(
+        "pykoclaw_whatsapp.connection.query_agent",
+        side_effect=_fake_agent_multiline_reply,
+    ):
+        connection._outgoing_queue = Mock()
+        await connection._handle_agent_trigger(chat_jid)
+
+        connection._outgoing_queue.send.assert_called_once()
+        sent_text = connection._outgoing_queue.send.call_args[0][2]
+        assert "Line 1" in sent_text
+        assert "Line 2" in sent_text
+        assert "Line 3" in sent_text
+
+
+@pytest.mark.asyncio
+async def test_extract_reply_unit() -> None:
+    """Unit test for _extract_reply() function."""
+    from pykoclaw_whatsapp.connection import _extract_reply
+
+    # Test: no tags returns None
+    assert _extract_reply("plain text") is None
+
+    # Test: single tag extracted
+    assert _extract_reply("<reply>Hello</reply>") == "Hello"
+
+    # Test: multiple tags joined with newline
+    result = _extract_reply("<reply>First</reply>\n<reply>Second</reply>")
+    assert result == "First\nSecond"
+
+    # Test: whitespace-only tag returns None
+    assert _extract_reply("<reply>   \n  </reply>") is None
+
+    # Test: multiline content preserved
+    result = _extract_reply("<reply>Line 1\nLine 2</reply>")
+    assert "Line 1" in result
+    assert "Line 2" in result
+
+    # Test: mixed content with tags and monologue
+    result = _extract_reply("Reasoning\n<reply>Answer</reply>\nMore reasoning")
+    assert result == "Answer"
+    assert "Reasoning" not in result
