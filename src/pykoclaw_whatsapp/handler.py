@@ -20,6 +20,8 @@ from typing import TYPE_CHECKING
 from neonize.events import MessageEv
 from neonize.utils.jid import Jid2String
 
+from pykoclaw.db import DbConnection
+
 if TYPE_CHECKING:
     from neonize.client import NewClient
 
@@ -166,7 +168,7 @@ def format_xml_messages(messages: list[tuple[str, str, str]]) -> str:
 
 
 def store_message(
-    db: sqlite3.Connection,
+    db: DbConnection,
     chat_jid: str,
     sender: str,
     text: str,
@@ -182,9 +184,7 @@ def store_message(
     db.commit()
 
 
-def update_chat_timestamp(
-    db: sqlite3.Connection, chat_jid: str, timestamp: str
-) -> None:
+def update_chat_timestamp(db: DbConnection, chat_jid: str, timestamp: str) -> None:
     db.execute(
         dedent("""\
             INSERT INTO wa_chats (jid, last_timestamp)
@@ -195,7 +195,7 @@ def update_chat_timestamp(
     db.commit()
 
 
-def update_global_cursor(db: sqlite3.Connection, timestamp: str) -> None:
+def update_global_cursor(db: DbConnection, timestamp: str) -> None:
     """Update global last_timestamp cursor (NanoClaw dual-cursor: index.ts:60-64)."""
     db.execute(
         dedent("""\
@@ -207,7 +207,7 @@ def update_global_cursor(db: sqlite3.Connection, timestamp: str) -> None:
     db.commit()
 
 
-def update_agent_cursor(db: sqlite3.Connection, chat_jid: str, timestamp: str) -> None:
+def update_agent_cursor(db: DbConnection, chat_jid: str, timestamp: str) -> None:
     """Update per-chat agent timestamp cursor (NanoClaw dual-cursor: index.ts:60-64)."""
     db.execute(
         dedent("""\
@@ -221,7 +221,7 @@ def update_agent_cursor(db: sqlite3.Connection, chat_jid: str, timestamp: str) -
 
 
 def get_new_messages_for_chat(
-    db: sqlite3.Connection, chat_jid: str
+    db: DbConnection, chat_jid: str
 ) -> list[tuple[str, str, str]]:
     """Get messages newer than last agent timestamp for a chat.
 
@@ -252,7 +252,7 @@ class MessageHandler:
     def __init__(
         self,
         *,
-        db: sqlite3.Connection,
+        db: DbConnection,
         outgoing_queue: OutgoingQueue,
         trigger_name: str,
         loop: asyncio.AbstractEventLoop,

@@ -21,7 +21,7 @@ from neonize.utils.jid import Jid2String
 
 from pykoclaw.agent_core import query_agent
 from pykoclaw.config import settings as core_settings
-from pykoclaw.db import get_conversation
+from pykoclaw.db import DbConnection, get_conversation
 
 from .config import WhatsAppSettings, get_config
 from .handler import (
@@ -64,7 +64,7 @@ class WhatsAppConnection:
     def __init__(
         self,
         *,
-        db: sqlite3.Connection,
+        db: DbConnection,
         config: WhatsAppSettings | None = None,
         extra_mcp_servers: dict[str, Any] | None = None,
     ) -> None:

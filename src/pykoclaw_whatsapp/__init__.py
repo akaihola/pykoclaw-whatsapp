@@ -9,6 +9,7 @@ from typing import Any
 import click
 from pydantic_settings import BaseSettings
 
+from pykoclaw.db import DbConnection
 from pykoclaw.plugins import PykoClawPluginBase
 
 from .config import WhatsAppSettings
@@ -88,9 +89,7 @@ class WhatsAppPlugin(PykoClawPluginBase):
     def get_config_class(self) -> type[BaseSettings] | None:
         return WhatsAppSettings
 
-    def get_mcp_servers(
-        self, db: sqlite3.Connection, conversation: str
-    ) -> dict[str, Any]:
+    def get_mcp_servers(self, db: DbConnection, conversation: str) -> dict[str, Any]:
         from claude_agent_sdk import create_sdk_mcp_server, tool
 
         from .handler import format_xml_messages, get_new_messages_for_chat
