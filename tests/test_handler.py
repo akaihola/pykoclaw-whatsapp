@@ -2,20 +2,22 @@
 
 from __future__ import annotations
 
+import asyncio
 import sqlite3
 from textwrap import dedent
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 
 pytest.importorskip("neonize")
 
 from pykoclaw_whatsapp.handler import (
+    BatchAccumulator,
+    MessageHandler,
     extract_text,
     format_xml_message,
     format_xml_messages,
     get_new_messages_for_chat,
-    should_trigger,
     store_message,
     update_agent_cursor,
     update_chat_timestamp,
@@ -158,18 +160,6 @@ def test_get_new_messages_for_chat(db: sqlite3.Connection) -> None:
     assert messages[1][2] == "Message 3"
 
 
-def test_should_trigger_with_mention() -> None:
-    """Test trigger detection with @mention."""
-    assert should_trigger("Hello @Andy how are you?", "Andy", False)
-    assert not should_trigger("Hello there", "Andy", False)
-
-
-def test_should_trigger_self_chat() -> None:
-    """Test that self-chat always triggers."""
-    assert should_trigger("Any message", "Andy", True)
-    assert should_trigger("No mention here", "Andy", True)
-
-
 def test_extract_text_from_conversation() -> None:
     """Test extracting text from conversation message."""
     mock_msg = Mock()
@@ -197,3 +187,129 @@ def test_extract_text_returns_none_for_unsupported() -> None:
 
     result = extract_text(mock_msg)
     assert result is None
+
+
+def _make_handler(
+    db: sqlite3.Connection,
+    trigger_name: str = "Andy",
+    self_jid: str | None = None,
+) -> tuple[MessageHandler, Mock]:
+    from neonize.utils.jid import Jid2String
+
+    loop = Mock(spec=asyncio.AbstractEventLoop)
+    loop.call_later = Mock(return_value=Mock())
+
+    batch_acc = Mock(spec=BatchAccumulator)
+    batch_acc.add = Mock()
+    batch_acc.flush_now = AsyncMock()
+
+    future = Mock()
+    loop_run = Mock(return_value=future)
+
+    handler = MessageHandler(
+        db=db,
+        outgoing_queue=Mock(),
+        trigger_name=trigger_name,
+        loop=loop,
+        batch_accumulator=batch_acc,
+    )
+    if self_jid:
+        handler.set_self_jid(self_jid)
+
+    return handler, batch_acc
+
+
+def _make_message_event(
+    chat_jid: str,
+    text: str,
+    sender: str = "User",
+    is_from_me: bool = False,
+    is_group: bool = False,
+    timestamp_ms: int = 1704067200000,
+) -> Mock:
+    from neonize.utils.jid import build_jid
+
+    mock_event = Mock()
+
+    user_part, server_part = chat_jid.split("@", 1)
+    chat_jid_obj = build_jid(user_part, server_part)
+
+    sender_user = sender.replace(" ", "")
+    sender_jid_obj = build_jid(sender_user, "s.whatsapp.net")
+
+    mock_event.Info.MessageSource.Chat = chat_jid_obj
+    mock_event.Info.MessageSource.Sender = sender_jid_obj
+    mock_event.Info.MessageSource.IsFromMe = is_from_me
+    mock_event.Info.MessageSource.IsGroup = is_group
+    mock_event.Info.Timestamp = timestamp_ms
+    mock_event.Info.Pushname = sender
+
+    mock_event.Message.HasField = lambda f: f == "conversation"
+    mock_event.Message.conversation = text
+
+    return mock_event
+
+
+def test_non_mention_enters_batch(db: sqlite3.Connection) -> None:
+    handler, batch_acc = _make_handler(db)
+    client = Mock()
+
+    event = _make_message_event("123@s.whatsapp.net", "Hello everyone")
+    handler.on_message(client, event)
+
+    batch_acc.add.assert_called_once_with("123@s.whatsapp.net")
+    batch_acc.flush_now.assert_not_called()
+
+
+def test_hard_mention_flushes(db: sqlite3.Connection) -> None:
+    handler, batch_acc = _make_handler(db)
+    client = Mock()
+
+    event = _make_message_event("123@s.whatsapp.net", "Hey @Andy what do you think?")
+    handler.on_message(client, event)
+
+    batch_acc.add.assert_not_called()
+
+
+def test_hard_mention_case_insensitive(db: sqlite3.Connection) -> None:
+    handler, batch_acc = _make_handler(db)
+    client = Mock()
+
+    event = _make_message_event("123@s.whatsapp.net", "hey @andy check this out")
+    handler.on_message(client, event)
+
+    batch_acc.add.assert_not_called()
+
+
+def test_self_chat_immediate(db: sqlite3.Connection) -> None:
+    handler, batch_acc = _make_handler(db, self_jid="555@s.whatsapp.net")
+    client = Mock()
+
+    event = _make_message_event(
+        "555@s.whatsapp.net", "Talking to myself", is_group=False
+    )
+    handler.on_message(client, event)
+
+    batch_acc.add.assert_not_called()
+
+
+def test_is_from_me_skipped(db: sqlite3.Connection) -> None:
+    handler, batch_acc = _make_handler(db)
+    client = Mock()
+
+    event = _make_message_event("123@s.whatsapp.net", "My own message", is_from_me=True)
+    handler.on_message(client, event)
+
+    batch_acc.add.assert_not_called()
+    batch_acc.flush_now.assert_not_called()
+
+
+def test_status_broadcast_skipped(db: sqlite3.Connection) -> None:
+    handler, batch_acc = _make_handler(db)
+    client = Mock()
+
+    event = _make_message_event("status@broadcast", "Status update")
+    handler.on_message(client, event)
+
+    batch_acc.add.assert_not_called()
+    batch_acc.flush_now.assert_not_called()
