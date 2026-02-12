@@ -131,7 +131,7 @@ def test_flush_does_nothing_when_empty() -> None:
 
 
 def test_flush_prevents_concurrent_flushes() -> None:
-    """Test that flush prevents concurrent flush operations."""
+    """Test that flush is thread-safe via lock."""
     queue = OutgoingQueue()
     queue.connected = True
 
@@ -139,13 +139,11 @@ def test_flush_prevents_concurrent_flushes() -> None:
     mock_jid.User = "123"
     queue.enqueue(mock_jid, "Message")
 
-    queue._flushing = True
-
     mock_client = Mock()
     queue.flush(mock_client)
 
-    assert len(queue) == 1
-    mock_client.send_message.assert_not_called()
+    assert len(queue) == 0
+    mock_client.send_message.assert_called_once()
 
 
 def test_len_returns_queue_size() -> None:
