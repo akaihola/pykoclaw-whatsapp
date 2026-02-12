@@ -48,6 +48,12 @@ class WhatsAppPlugin(PykoClawPluginBase):
 
             mcp_servers = plugin.get_mcp_servers(db, "whatsapp")
 
+            from .config import get_config
+
+            wa_config = get_config()
+            click.echo(f"Data directory: {settings.data}")
+            click.echo(f"Trigger name:   {wa_config.trigger_name}")
+
             conn = WhatsAppConnection(db=db, extra_mcp_servers=mcp_servers)
             conn.run()
 

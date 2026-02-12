@@ -194,14 +194,15 @@ class TestWhatsAppSettingsIgnoresWrongPrefix:
     def test_whatsapp_settings_ignores_pykoclaw_prefix(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Test WhatsAppSettings rejects PYKOCLAW_MODEL (extra field with wrong prefix)."""
+        """Test WhatsAppSettings silently ignores PYKOCLAW_MODEL (wrong prefix)."""
         env_file = tmp_path / ".env"
-        env_file.write_text("PYKOCLAW_MODEL=should-be-rejected\n")
+        env_file.write_text("PYKOCLAW_MODEL=should-be-ignored\n")
 
         monkeypatch.chdir(tmp_path)
 
-        with pytest.raises(ValueError, match="Extra inputs are not permitted"):
-            WhatsAppSettings()
+        settings = WhatsAppSettings()
+
+        assert settings.trigger_name == "Andy"
 
     def test_whatsapp_settings_ignores_non_prefixed_vars(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

@@ -25,6 +25,7 @@ class WhatsAppSettings(BaseSettings):
             ".env",
         ),
         "env_file_encoding": "utf-8",
+        "extra": "ignore",
     }
 
 

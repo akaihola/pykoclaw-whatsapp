@@ -281,6 +281,50 @@ def test_hard_mention_case_insensitive(db: sqlite3.Connection) -> None:
     batch_acc.add.assert_not_called()
 
 
+def test_hard_mention_name_at_start(db: sqlite3.Connection) -> None:
+    handler, batch_acc = _make_handler(db)
+    client = Mock()
+
+    for text in [
+        "Andy what do you think?",
+        "Andy, check this out",
+        "andy: look at this",
+        "Andy! is this right?",
+    ]:
+        batch_acc.reset_mock()
+        event = _make_message_event("123@s.whatsapp.net", text)
+        handler.on_message(client, event)
+        batch_acc.add.assert_not_called(), f"Expected flush for: {text!r}"
+
+
+def test_hard_mention_name_after_full_stop(db: sqlite3.Connection) -> None:
+    handler, batch_acc = _make_handler(db)
+    client = Mock()
+
+    for text in [
+        "Something happened. Andy what do you think?",
+        "Ok cool. Andy, check this",
+    ]:
+        batch_acc.reset_mock()
+        event = _make_message_event("123@s.whatsapp.net", text)
+        handler.on_message(client, event)
+        batch_acc.add.assert_not_called(), f"Expected flush for: {text!r}"
+
+
+def test_name_mid_sentence_is_soft(db: sqlite3.Connection) -> None:
+    handler, batch_acc = _make_handler(db)
+    client = Mock()
+
+    for text in [
+        "I told Andy about it yesterday",
+        "What Andy said was interesting",
+    ]:
+        batch_acc.reset_mock()
+        event = _make_message_event("123@s.whatsapp.net", text)
+        handler.on_message(client, event)
+        batch_acc.add.assert_called_once(), f"Expected batch for: {text!r}"
+
+
 def test_self_chat_immediate(db: sqlite3.Connection) -> None:
     handler, batch_acc = _make_handler(db, self_jid="555@s.whatsapp.net")
     client = Mock()
@@ -302,6 +346,19 @@ def test_is_from_me_skipped(db: sqlite3.Connection) -> None:
 
     batch_acc.add.assert_not_called()
     batch_acc.flush_now.assert_not_called()
+
+
+def test_is_hard_mention_unit() -> None:
+    from pykoclaw_whatsapp.handler import _is_hard_mention
+
+    assert _is_hard_mention("@Andy", "Andy")
+    assert _is_hard_mention("hey @andy!", "Andy")
+    assert _is_hard_mention("Andy what?", "Andy")
+    assert _is_hard_mention("Andy, hi", "Andy")
+    assert _is_hard_mention("andy: yo", "Andy")
+    assert _is_hard_mention("Ok. Andy check this", "Andy")
+    assert not _is_hard_mention("I told Andy about it", "Andy")
+    assert not _is_hard_mention("Andyman is here", "Andy")
 
 
 def test_status_broadcast_skipped(db: sqlite3.Connection) -> None:

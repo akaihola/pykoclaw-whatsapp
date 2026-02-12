@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import sqlite3
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
@@ -25,6 +26,37 @@ if TYPE_CHECKING:
     from .queue import OutgoingQueue
 
 log = logging.getLogger(__name__)
+
+# Matches "@name" anywhere, or "name" followed by a separator (space, comma,
+# colon, excl., question) at the start of the text or after a sentence-ending
+# full stop.  All matching is case-insensitive.
+_HARD_MENTION_RE: re.Pattern[str] | None = None
+
+
+def _build_hard_mention_re(trigger_name: str) -> re.Pattern[str]:
+    name = re.escape(trigger_name)
+    return re.compile(
+        rf"@{name}\b"  # @Andy anywhere
+        rf"|(?:^|(?<=\.\s))"  # start-of-string  OR  after ". "
+        rf"{name}"  # the name itself
+        rf"(?=[\s,:!?])",  # followed by separator
+        re.IGNORECASE,
+    )
+
+
+def _is_hard_mention(text: str, trigger_name: str) -> bool:
+    """Return *True* if *text* contains a hard mention of *trigger_name*.
+
+    Hard mentions:
+    - ``@Andy`` anywhere in the text
+    - ``Andy`` (case-insensitive) at the start of the message or after a
+      sentence-ending full stop, followed by a separator (space, comma, colon,
+      exclamation or question mark).
+    """
+    global _HARD_MENTION_RE  # noqa: PLW0603
+    if _HARD_MENTION_RE is None:
+        _HARD_MENTION_RE = _build_hard_mention_re(trigger_name)
+    return _HARD_MENTION_RE.search(text) is not None
 
 
 class BatchAccumulator:
@@ -278,7 +310,7 @@ class MessageHandler:
                 and not source.IsGroup
             )
 
-            is_hard_mention = f"@{self._trigger_name}".lower() in text.lower()
+            is_hard_mention = _is_hard_mention(text, self._trigger_name)
 
             if is_self_chat or is_hard_mention:
                 asyncio.run_coroutine_threadsafe(
