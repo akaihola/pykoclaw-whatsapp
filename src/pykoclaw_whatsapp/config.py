@@ -16,6 +16,7 @@ class WhatsAppSettings(BaseSettings):
     session_db: Path = Field(
         default=Path.home() / ".pykoclaw" / "whatsapp" / "session.db"
     )
+    batch_window_seconds: int = Field(default=90)
 
     class Config:
         env_prefix = "PYKOCLAW_WA_"
