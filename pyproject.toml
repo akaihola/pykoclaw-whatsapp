@@ -3,7 +3,7 @@ name = "pykoclaw-whatsapp"
 version = "0.1.0"
 description = "WhatsApp plugin for pykoclaw"
 requires-python = ">=3.12"
-dependencies = ["pykoclaw", "neonize", "click"]
+dependencies = ["pykoclaw", "neonize>=0.3.14", "click", "qrcode"]
 
 [tool.uv.sources]
 pykoclaw = { workspace = true }
