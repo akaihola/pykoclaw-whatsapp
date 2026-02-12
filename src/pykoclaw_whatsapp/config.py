@@ -11,10 +11,17 @@ from pydantic_settings import BaseSettings
 class WhatsAppSettings(BaseSettings):
     """WhatsApp plugin configuration."""
 
-    auth_dir: Path = Field(default=Path.home() / ".pykoclaw" / "whatsapp" / "auth")
+    auth_dir: Path = Field(
+        default=Path.home() / ".local" / "share" / "pykoclaw" / "whatsapp" / "auth"
+    )
     trigger_name: str = Field(default="Andy")
     session_db: Path = Field(
-        default=Path.home() / ".pykoclaw" / "whatsapp" / "session.db"
+        default=Path.home()
+        / ".local"
+        / "share"
+        / "pykoclaw"
+        / "whatsapp"
+        / "session.db"
     )
     batch_window_seconds: int = Field(default=90)
 

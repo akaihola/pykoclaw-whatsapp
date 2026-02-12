@@ -34,7 +34,7 @@ class TestWhatsAppSettingsDefaults:
 
         settings = WhatsAppSettings()
 
-        expected = Path.home() / ".pykoclaw" / "whatsapp" / "auth"
+        expected = Path.home() / ".local" / "share" / "pykoclaw" / "whatsapp" / "auth"
         assert settings.auth_dir == expected
 
     def test_whatsapp_settings_session_db_default(
@@ -45,7 +45,9 @@ class TestWhatsAppSettingsDefaults:
 
         settings = WhatsAppSettings()
 
-        expected = Path.home() / ".pykoclaw" / "whatsapp" / "session.db"
+        expected = (
+            Path.home() / ".local" / "share" / "pykoclaw" / "whatsapp" / "session.db"
+        )
         assert settings.session_db == expected
 
 
