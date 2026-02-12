@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sqlite3
 from textwrap import dedent
 from typing import Any
 

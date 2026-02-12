@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-import sqlite3
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from html import escape as html_escape

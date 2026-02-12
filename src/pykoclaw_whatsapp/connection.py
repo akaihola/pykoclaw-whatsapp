@@ -10,7 +10,6 @@ import asyncio
 import logging
 import re
 import signal
-import sqlite3
 import threading
 from textwrap import dedent
 from typing import Any
