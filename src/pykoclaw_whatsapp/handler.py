@@ -30,7 +30,7 @@ log = logging.getLogger(__name__)
 # Matches "@name" anywhere, or "name" followed by a separator (space, comma,
 # colon, excl., question) at the start of the text or after a sentence-ending
 # full stop.  All matching is case-insensitive.
-_HARD_MENTION_RE: re.Pattern[str] | None = None
+_HARD_MENTION_CACHE: dict[str, re.Pattern[str]] = {}
 
 
 def _build_hard_mention_re(trigger_name: str) -> re.Pattern[str]:
@@ -53,10 +53,9 @@ def _is_hard_mention(text: str, trigger_name: str) -> bool:
       sentence-ending full stop, followed by a separator (space, comma, colon,
       exclamation or question mark).
     """
-    global _HARD_MENTION_RE  # noqa: PLW0603
-    if _HARD_MENTION_RE is None:
-        _HARD_MENTION_RE = _build_hard_mention_re(trigger_name)
-    return _HARD_MENTION_RE.search(text) is not None
+    if trigger_name not in _HARD_MENTION_CACHE:
+        _HARD_MENTION_CACHE[trigger_name] = _build_hard_mention_re(trigger_name)
+    return _HARD_MENTION_CACHE[trigger_name].search(text) is not None
 
 
 class BatchAccumulator:

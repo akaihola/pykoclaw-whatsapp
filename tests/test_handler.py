@@ -361,6 +361,23 @@ def test_is_hard_mention_unit() -> None:
     assert not _is_hard_mention("Andyman is here", "Andy")
 
 
+def test_is_hard_mention_multiple_trigger_names() -> None:
+    """Verify cache handles different trigger names correctly."""
+    from pykoclaw_whatsapp.handler import _is_hard_mention
+
+    # Test with "Andy"
+    assert _is_hard_mention("@Andy check this", "Andy")
+    assert not _is_hard_mention("@Bob check this", "Andy")
+
+    # Test with "Bob"
+    assert _is_hard_mention("@Bob check this", "Bob")
+    assert not _is_hard_mention("@Andy check this", "Bob")
+
+    # Test with "Charlie"
+    assert _is_hard_mention("@Charlie hello", "Charlie")
+    assert not _is_hard_mention("@Andy hello", "Charlie")
+
+
 def test_status_broadcast_skipped(db: sqlite3.Connection) -> None:
     handler, batch_acc = _make_handler(db)
     client = Mock()
