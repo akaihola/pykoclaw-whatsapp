@@ -18,8 +18,14 @@ class WhatsAppSettings(BaseSettings):
     )
     batch_window_seconds: int = Field(default=90)
 
-    class Config:
-        env_prefix = "PYKOCLAW_WA_"
+    model_config = {
+        "env_prefix": "PYKOCLAW_WA_",
+        "env_file": (
+            str(Path.home() / ".local" / "share" / "pykoclaw" / ".env"),
+            ".env",
+        ),
+        "env_file_encoding": "utf-8",
+    }
 
 
 _config: WhatsAppSettings | None = None
