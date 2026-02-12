@@ -12,6 +12,7 @@ import re
 import signal
 import sqlite3
 import threading
+from textwrap import dedent
 from typing import Any
 
 from neonize.client import NewClient
@@ -144,10 +145,8 @@ class WhatsAppConnection:
                 self._handler.on_message(_client, event)
 
     def _build_system_prompt(self, chat_jid: str, *, hard_mention: bool) -> str:
-        from textwrap import dedent as _dedent
-
         trigger = self._config.trigger_name
-        base = _dedent(
+        base = dedent(
             f"""\
             You are {trigger}, an ambient participant in a WhatsApp chat ({chat_jid}).
             

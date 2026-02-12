@@ -162,7 +162,7 @@ def format_xml_message(sender: str, timestamp: str, content: str) -> str:
 def format_xml_messages(messages: list[tuple[str, str, str]]) -> str:
     """Format multiple messages as XML block for agent prompt."""
     lines = [format_xml_message(s, t, c) for s, t, c in messages]
-    return f"<messages>\n{chr(10).join(lines)}\n</messages>"
+    return f"<messages>\n{'\n'.join(lines)}\n</messages>"
 
 
 def store_message(
