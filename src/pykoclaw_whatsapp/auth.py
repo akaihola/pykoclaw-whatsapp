@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-import asyncio
+import threading
+import time
 
 import click
 import qrcode
@@ -12,7 +13,7 @@ from neonize.events import ConnectedEv
 from .config import get_config
 
 
-async def run_auth() -> None:
+def run_auth() -> None:
     """Authenticate with WhatsApp using QR code."""
     config = get_config()
     config.auth_dir.mkdir(parents=True, exist_ok=True)
@@ -22,6 +23,7 @@ async def run_auth() -> None:
     client = NewClient(str(config.session_db))
 
     qr_displayed = False
+    connected = threading.Event()
 
     @client.qr
     def on_qr(_client: NewClient, data_qr: bytes) -> None:
@@ -43,14 +45,16 @@ async def run_auth() -> None:
         click.echo("\n✓ Successfully authenticated with WhatsApp!")
         click.echo(f"  Credentials saved to {config.auth_dir}/")
         click.echo("  You can now start the pykoclaw WhatsApp service.\n")
-        asyncio.create_task(shutdown_client(client))
-
-    async def shutdown_client(client: NewClient) -> None:
-        await asyncio.sleep(1)
-        client.disconnect()
+        connected.set()
 
     try:
-        client.connect()
+        thread = threading.Thread(target=client.connect, daemon=True)
+        thread.start()
+        if not connected.wait(timeout=120):
+            click.echo("\n✗ Authentication timed out.")
+            raise SystemExit(1)
+        time.sleep(1)  # Let credentials flush
+        client.disconnect()
     except KeyboardInterrupt:
         click.echo("\n✗ Authentication cancelled.")
         raise SystemExit(1)

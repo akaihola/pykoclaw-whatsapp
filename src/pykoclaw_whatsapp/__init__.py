@@ -18,8 +18,6 @@ class WhatsAppPlugin(PykoClawPluginBase):
     """WhatsApp plugin for pykoclaw."""
 
     def register_commands(self, group: click.Group) -> None:
-        import asyncio
-
         @group.group()
         def whatsapp() -> None:
             """WhatsApp integration commands."""
@@ -29,7 +27,7 @@ class WhatsAppPlugin(PykoClawPluginBase):
             """Authenticate with WhatsApp using QR code."""
             from .auth import run_auth
 
-            asyncio.run(run_auth())
+            run_auth()
 
         @whatsapp.command()
         def run() -> None:
