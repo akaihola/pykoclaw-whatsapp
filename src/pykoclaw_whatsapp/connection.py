@@ -8,7 +8,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
+import signal
 import sqlite3
+import threading
 from typing import Any
 
 from neonize.client import NewClient
@@ -53,12 +56,13 @@ class WhatsAppConnection:
         self._handler: MessageHandler | None = None
 
     def run(self) -> None:
-        """Start the WhatsApp connection and asyncio event loop.
+        """Block the main thread on neonize ``connect()`` until Ctrl-C.
 
-        Blocks until interrupted (Ctrl+C) or logged out.
+        ``connect()`` is a blocking ctypes→Go call that only unblocks when
+        ``client.stop()`` cancels the Go context.  The asyncio loop runs on
+        a daemon thread so ``run_coroutine_threadsafe`` agent callbacks work.
         """
         self._loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self._loop)
 
         self._handler = MessageHandler(
             db=self._db,
@@ -68,25 +72,18 @@ class WhatsAppConnection:
             agent_callback=self._handle_agent_trigger,
         )
 
+        loop_thread = threading.Thread(target=self._loop.run_forever, daemon=True)
+        loop_thread.start()
+
         self._config.auth_dir.mkdir(parents=True, exist_ok=True)
-        self._client = NewClient("pykoclaw-whatsapp")
+        self._client = NewClient(str(self._config.session_db))
 
         self._register_events(self._client)
 
         log.info("Starting WhatsApp connection...")
 
-        try:
-            self._loop.run_in_executor(None, self._client.connect)
-            self._loop.run_forever()
-        except KeyboardInterrupt:
-            log.info("Shutting down...")
-        finally:
-            if self._client:
-                try:
-                    self._client.disconnect()
-                except Exception:
-                    pass
-            self._loop.close()
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+        self._client.connect()
 
     def _register_events(self, client: NewClient) -> None:
         @client.event(QREv)
@@ -101,7 +98,7 @@ class WhatsAppConnection:
             log.info("Connected to WhatsApp")
 
             if _client.me:
-                self_jid = Jid2String(_client.me)
+                self_jid = Jid2String(_client.me.JID)
                 if self._handler:
                     self._handler.set_self_jid(self_jid)
                 log.info("Self JID: %s", self_jid)
