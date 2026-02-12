@@ -20,9 +20,11 @@ from neonize.utils.jid import Jid2String
 
 from pykoclaw.agent_core import query_agent
 from pykoclaw.config import settings as core_settings
+from pykoclaw.db import get_conversation
 
 from .config import WhatsAppSettings, get_config
 from .handler import (
+    BatchAccumulator,
     MessageHandler,
     format_xml_messages,
     get_new_messages_for_chat,
@@ -54,6 +56,7 @@ class WhatsAppConnection:
         self._loop: asyncio.AbstractEventLoop | None = None
         self._client: NewClient | None = None
         self._handler: MessageHandler | None = None
+        self._batch_accumulator: BatchAccumulator | None = None
 
     def run(self) -> None:
         """Block the main thread on neonize ``connect()`` until Ctrl-C.
@@ -64,11 +67,18 @@ class WhatsAppConnection:
         """
         self._loop = asyncio.new_event_loop()
 
+        self._batch_accumulator = BatchAccumulator(
+            window_seconds=self._config.batch_window_seconds,
+            loop=self._loop,
+            flush_callback=self._handle_agent_trigger,
+        )
+
         self._handler = MessageHandler(
             db=self._db,
             outgoing_queue=self._outgoing_queue,
             trigger_name=self._config.trigger_name,
             loop=self._loop,
+            batch_accumulator=self._batch_accumulator,
             agent_callback=self._handle_agent_trigger,
         )
 
@@ -115,14 +125,41 @@ class WhatsAppConnection:
             if self._handler:
                 self._handler.on_message(_client, event)
 
+    def _build_system_prompt(self, chat_jid: str, *, hard_mention: bool) -> str:
+        from textwrap import dedent as _dedent
+
+        trigger = self._config.trigger_name
+        base = _dedent(
+            f"""\
+            You are {trigger}, an ambient participant in a WhatsApp chat ({chat_jid}).
+            You observe conversations silently. In the vast majority of batches, you \
+            should produce NO text output. Err heavily toward silence.
+            Only reply when: (a) you are directly addressed by name or @mention, \
+            (b) there is clear factual misinformation that no one has corrected, or \
+            (c) you have crucial missing knowledge that would significantly help the \
+            conversation.
+            Do NOT volunteer opinions, make small talk, or interject with tangential \
+            information. If you choose not to reply, produce no text output at all — \
+            do not explain why you are staying silent.
+            You may use tools silently (e.g., writing notes, updating files) even \
+            when you choose not to reply. Tool use without a reply is normal and expected.
+            People may refer to you by name in various forms — your full name, \
+            shortened, with or without @, with punctuation, or even inflected/declined \
+            forms in non-English languages. When someone addresses you by any variation \
+            of your name, treat it as a direct address and reply."""
+        )
+        if hard_mention:
+            base += (
+                "\n\nThis batch contains a direct @mention of your name "
+                "— you MUST reply to it."
+            )
+        return base
+
     async def _handle_agent_trigger(
         self,
-        *,
-        client: NewClient,
         chat_jid: str,
-        trigger_text: str,
+        hard_mention: bool = False,
     ) -> None:
-        """Process a triggered message through the agent pipeline."""
         try:
             messages = get_new_messages_for_chat(self._db, chat_jid)
             if not messages:
@@ -130,10 +167,17 @@ class WhatsAppConnection:
 
             xml_context = format_xml_messages(messages)
             conversation_name = f"wa-{chat_jid}"
+
+            conv = get_conversation(self._db, conversation_name)
+            resume_session_id = conv.session_id if conv and conv.session_id else None
+
+            system_prompt = self._build_system_prompt(
+                chat_jid, hard_mention=hard_mention
+            )
+
             prompt = (
-                f"You are responding to a WhatsApp conversation. "
-                f"Here are the recent messages:\n\n{xml_context}\n\n"
-                f"Respond to the latest message."
+                f"New message batch from WhatsApp chat:\n\n{xml_context}\n\n"
+                f"Decide whether to reply, use tools silently, or do nothing."
             )
 
             response_parts: list[str] = []
@@ -142,6 +186,8 @@ class WhatsAppConnection:
                 db=self._db,
                 data_dir=core_settings.data,
                 conversation_name=conversation_name,
+                system_prompt=system_prompt,
+                resume_session_id=resume_session_id,
                 extra_mcp_servers=self._extra_mcp_servers,
             ):
                 if msg.type == "text" and msg.text:
@@ -149,16 +195,17 @@ class WhatsAppConnection:
                 elif msg.type == "result":
                     pass
 
-            if response_parts:
-                full_response = "\n".join(response_parts)
+            full_response = "\n".join(response_parts).strip()
+            if full_response:
                 jid = self._build_jid(chat_jid)
-                self._outgoing_queue.send(client, jid, full_response)
+                self._outgoing_queue.send(self._client, jid, full_response)
+                log.info("Agent response sent to %s", chat_jid)
+            else:
+                log.info("Agent chose silence for %s", chat_jid)
 
             last_msg_ts = messages[-1][1] if messages else ""
             if last_msg_ts:
                 update_agent_cursor(self._db, chat_jid, last_msg_ts)
-
-            log.info("Agent response sent to %s", chat_jid)
         except Exception:
             log.exception("Error in agent trigger for %s", chat_jid)
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sqlite3
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from html import escape as html_escape
 from textwrap import dedent
@@ -24,6 +25,78 @@ if TYPE_CHECKING:
     from .queue import OutgoingQueue
 
 log = logging.getLogger(__name__)
+
+
+class BatchAccumulator:
+    """Per-chat message batch accumulator with timer-based flushing.
+
+    Accumulates messages in per-chat batches. After the first message in a
+    batch, a timer fires after ``window_seconds``. Hard mentions flush
+    immediately via :meth:`flush_now`. A per-chat :class:`asyncio.Lock`
+    prevents concurrent agent calls for the same chat.
+    """
+
+    def __init__(
+        self,
+        *,
+        window_seconds: float,
+        loop: asyncio.AbstractEventLoop,
+        flush_callback: Callable[[str, bool], Awaitable[None]],
+    ) -> None:
+        self._window = window_seconds
+        self._loop = loop
+        self._flush_callback = flush_callback
+        self._timers: dict[str, asyncio.TimerHandle] = {}
+        self._locks: dict[str, asyncio.Lock] = {}
+        self._pending_reflush: set[str] = set()
+
+    def _get_lock(self, chat_jid: str) -> asyncio.Lock:
+        if chat_jid not in self._locks:
+            self._locks[chat_jid] = asyncio.Lock()
+        return self._locks[chat_jid]
+
+    def add(self, chat_jid: str) -> None:
+        """Schedule a batch timer for *chat_jid* (called from Go thread).
+
+        First message starts the timer. Subsequent messages within the window
+        do NOT reset it (debounce, not throttle).  If the chat is currently
+        being flushed (lock held), the chat is marked for re-flush.
+        """
+        asyncio.run_coroutine_threadsafe(self._add_async(chat_jid), self._loop)
+
+    async def _add_async(self, chat_jid: str) -> None:
+        lock = self._get_lock(chat_jid)
+        if lock.locked():
+            self._pending_reflush.add(chat_jid)
+            return
+        if chat_jid not in self._timers:
+            handle = self._loop.call_later(
+                self._window,
+                lambda jid=chat_jid: asyncio.ensure_future(self._timer_expired(jid)),
+            )
+            self._timers[chat_jid] = handle
+
+    async def flush_now(self, chat_jid: str) -> None:
+        """Immediately flush *chat_jid*'s batch (hard mention / self-chat)."""
+        if chat_jid in self._timers:
+            self._timers.pop(chat_jid).cancel()
+        await self._do_flush(chat_jid, hard_mention=True)
+
+    async def _timer_expired(self, chat_jid: str) -> None:
+        self._timers.pop(chat_jid, None)
+        await self._do_flush(chat_jid, hard_mention=False)
+
+    async def _do_flush(self, chat_jid: str, *, hard_mention: bool) -> None:
+        lock = self._get_lock(chat_jid)
+        async with lock:
+            await self._flush_callback(chat_jid, hard_mention)
+        if chat_jid in self._pending_reflush:
+            self._pending_reflush.discard(chat_jid)
+            handle = self._loop.call_later(
+                self._window,
+                lambda jid=chat_jid: asyncio.ensure_future(self._timer_expired(jid)),
+            )
+            self._timers[chat_jid] = handle
 
 
 def extract_text(msg: MessageEv) -> str | None:
@@ -138,20 +211,6 @@ def get_new_messages_for_chat(
     return [(r["sender"], r["timestamp"], r["text"]) for r in rows]
 
 
-def should_trigger(
-    text: str,
-    trigger_name: str,
-    is_self_chat: bool,
-) -> bool:
-    """Check if message should trigger agent response.
-
-    Self-chat always triggers. Otherwise requires @trigger_name mention.
-    """
-    if is_self_chat:
-        return True
-    return f"@{trigger_name}" in text
-
-
 class MessageHandler:
     """Handles incoming WhatsApp messages.
 
@@ -166,12 +225,14 @@ class MessageHandler:
         outgoing_queue: OutgoingQueue,
         trigger_name: str,
         loop: asyncio.AbstractEventLoop,
+        batch_accumulator: BatchAccumulator,
         agent_callback: object | None = None,
     ) -> None:
         self._db = db
         self._outgoing_queue = outgoing_queue
         self._trigger_name = trigger_name
         self._loop = loop
+        self._batch_accumulator = batch_accumulator
         self._agent_callback = agent_callback
         self._self_jid: str | None = None
 
@@ -179,7 +240,6 @@ class MessageHandler:
         self._self_jid = jid_str
 
     def on_message(self, client: NewClient, event: MessageEv) -> None:
-        """Neonize message callback — runs on a Go thread."""
         try:
             info = event.Info
             source = info.MessageSource
@@ -209,31 +269,23 @@ class MessageHandler:
             update_chat_timestamp(self._db, chat_jid, timestamp)
             update_global_cursor(self._db, timestamp)
 
+            if is_from_me:
+                return
+
             is_self_chat = (
                 self._self_jid is not None
                 and chat_jid.split("@")[0] == self._self_jid.split("@")[0]
                 and not source.IsGroup
             )
 
-            if not should_trigger(text, self._trigger_name, is_self_chat):
-                log.debug("Skipping message (no trigger): %s", chat_jid)
-                return
+            is_hard_mention = f"@{self._trigger_name}".lower() in text.lower()
 
-            log.info(
-                "Trigger matched in %s from %s: %.50s",
-                chat_jid,
-                sender,
-                text,
-            )
-
-            if self._agent_callback is not None:
+            if is_self_chat or is_hard_mention:
                 asyncio.run_coroutine_threadsafe(
-                    self._agent_callback(  # type: ignore[operator]
-                        client=client,
-                        chat_jid=chat_jid,
-                        trigger_text=text,
-                    ),
+                    self._batch_accumulator.flush_now(chat_jid),
                     self._loop,
                 )
+            else:
+                self._batch_accumulator.add(chat_jid)
         except Exception:
             log.exception("Error handling message")
