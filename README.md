@@ -102,8 +102,37 @@ pykoclaw whatsapp run
        └── OutgoingQueue (buffers on disconnect, flushes on reconnect)
 ```
 
-Neonize callbacks run on Go threads. The handler bridges to the Python asyncio
-event loop via `asyncio.run_coroutine_threadsafe()`.
+### Threading model
+
+Three threads share a single SQLite connection:
+
+| Thread             | Created by                  | Runs                                         |
+| ------------------ | --------------------------- | -------------------------------------------- |
+| Main               | Python                      | `neonize.connect()` (blocks)                 |
+| Go callback        | Neonize/whatsmeow           | `on_message()` → `store_message`, `update_*` |
+| asyncio event loop | `threading.Thread` (daemon) | `_handle_agent_trigger` → `query_agent`      |
+
+The connection is created on the main thread but used from all three. Python's
+`sqlite3` C extension releases the GIL during `sqlite3_step()`, so concurrent
+access on the same connection can corrupt internal state. To prevent this,
+`init_db()` returns a `ThreadSafeConnection` wrapper that serializes all access
+with a `threading.Lock`.
+
+**Future alternatives** if lock contention becomes a bottleneck:
+
+- **Connection-per-thread** — each thread opens its own connection; WAL mode
+  allows parallel reads. Requires passing a factory instead of a connection.
+- **Connection pool** (`sqlite3` + `queue.Queue`) — fixed pool of N
+  connections, threads borrow and return.
+- **aiosqlite** — async wrapper with a dedicated writer thread; natural fit for
+  the asyncio side but the Go callback thread still needs synchronous access.
+
+### Neonize quirks
+
+- `info.Timestamp` is in **milliseconds**, not seconds — divide by 1000 for
+  `datetime.fromtimestamp()`.
+- `client.me` is not a JID — use `client.me.JID` to get the JID object that
+  `Jid2String()` expects.
 
 ## Supported message types
 
