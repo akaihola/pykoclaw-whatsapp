@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
 
 import click
 import pytest
@@ -89,8 +90,12 @@ def test_get_mcp_servers_returns_whatsapp_server() -> None:
     assert isinstance(servers["whatsapp"], dict)
 
 
-def test_whatsapp_settings_defaults() -> None:
+def test_whatsapp_settings_defaults(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Test WhatsAppSettings default values."""
+    monkeypatch.chdir(tmp_path)
+
     settings = WhatsAppSettings()
 
     assert settings.trigger_name == "Andy"

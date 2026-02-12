@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from pathlib import Path
 from textwrap import dedent
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -49,8 +50,12 @@ def db() -> sqlite3.Connection:
 
 
 @pytest.fixture
-def connection(db: sqlite3.Connection) -> WhatsAppConnection:
+def connection(
+    db: sqlite3.Connection, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> WhatsAppConnection:
     from pykoclaw_whatsapp.config import WhatsAppSettings
+
+    monkeypatch.chdir(tmp_path)
 
     config = WhatsAppSettings(trigger_name="Andy")
     conn = WhatsAppConnection(db=db, config=config)
