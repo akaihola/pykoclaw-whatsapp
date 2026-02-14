@@ -18,9 +18,9 @@ from neonize.client import NewClient
 from neonize.events import ConnectedEv, DisconnectedEv, MessageEv, QREv
 from neonize.utils.jid import Jid2String
 
-from pykoclaw.agent_core import query_agent
 from pykoclaw.config import settings as core_settings
-from pykoclaw.db import DbConnection, get_conversation
+from pykoclaw.db import DbConnection
+from pykoclaw_messaging import dispatch_to_agent
 
 from .config import WhatsAppSettings, get_config
 from .handler import (
@@ -187,10 +187,6 @@ class WhatsAppConnection:
                 return
 
             xml_context = format_xml_messages(messages)
-            conversation_name = f"wa-{chat_jid}"
-
-            conv = get_conversation(self._db, conversation_name)
-            resume_session_id = conv.session_id if conv and conv.session_id else None
 
             system_prompt = self._build_system_prompt(
                 chat_jid, hard_mention=hard_mention
@@ -201,23 +197,17 @@ class WhatsAppConnection:
                 f"Decide whether to reply, use tools silently, or do nothing."
             )
 
-            response_parts: list[str] = []
-            async for msg in query_agent(
-                prompt,
+            result = await dispatch_to_agent(
+                prompt=prompt,
+                channel_prefix="wa",
+                channel_id=chat_jid,
                 db=self._db,
                 data_dir=core_settings.data,
-                conversation_name=conversation_name,
                 system_prompt=system_prompt,
-                resume_session_id=resume_session_id,
                 extra_mcp_servers=self._extra_mcp_servers,
-            ):
-                if msg.type == "text" and msg.text:
-                    response_parts.append(msg.text)
-                elif msg.type == "result":
-                    pass
+            )
 
-            full_response = "\n".join(response_parts).strip()
-            extracted = _extract_reply(full_response)
+            extracted = _extract_reply(result.full_text)
             if extracted:
                 jid = self._build_jid(chat_jid)
                 self._outgoing_queue.send(self._client, jid, extracted)
