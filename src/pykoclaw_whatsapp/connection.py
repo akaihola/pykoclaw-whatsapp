@@ -19,7 +19,12 @@ from neonize.events import ConnectedEv, DisconnectedEv, MessageEv, QREv
 from neonize.utils.jid import Jid2String
 
 from pykoclaw.config import settings as core_settings
-from pykoclaw.db import DbConnection
+from pykoclaw.db import (
+    DbConnection,
+    get_pending_deliveries,
+    mark_delivered,
+    mark_delivery_failed,
+)
 from pykoclaw_messaging import dispatch_to_agent
 
 from .config import WhatsAppSettings, get_config
@@ -60,6 +65,8 @@ class WhatsAppConnection:
     handlers, and bridges the Go-thread Neonize callbacks into asyncio.
     """
 
+    DELIVERY_POLL_INTERVAL_S = 10
+
     def __init__(
         self,
         *,
@@ -75,6 +82,7 @@ class WhatsAppConnection:
         self._client: NewClient | None = None
         self._handler: MessageHandler | None = None
         self._batch_accumulator: BatchAccumulator | None = None
+        self._delivery_task: asyncio.Task[None] | None = None
 
     def run(self) -> None:
         """Block the main thread on neonize ``connect()`` until Ctrl-C.
@@ -133,9 +141,17 @@ class WhatsAppConnection:
 
             self._outgoing_queue.flush(_client)
 
+            if self._loop and self._delivery_task is None:
+                asyncio.run_coroutine_threadsafe(
+                    self._start_delivery_polling(), self._loop
+                )
+
         @client.event(DisconnectedEv)
         def on_disconnected(_client: NewClient, event: DisconnectedEv) -> None:
             self._outgoing_queue.connected = False
+            if self._delivery_task is not None and not self._delivery_task.done():
+                self._delivery_task.cancel()
+            self._delivery_task = None
             log.info("Disconnected (queued_messages=%d)", len(self._outgoing_queue))
 
         @client.event(MessageEv)
@@ -220,6 +236,37 @@ class WhatsAppConnection:
                 update_agent_cursor(self._db, chat_jid, last_msg_ts)
         except Exception:
             log.exception("Error in agent trigger for %s", chat_jid)
+
+    async def _start_delivery_polling(self) -> None:
+        self._delivery_task = asyncio.create_task(self._delivery_poll_loop())
+
+    async def _delivery_poll_loop(self) -> None:
+        log.info("Delivery polling started")
+        try:
+            while True:
+                await asyncio.sleep(self.DELIVERY_POLL_INTERVAL_S)
+                try:
+                    self._process_pending_deliveries()
+                except Exception:
+                    log.exception("Error processing delivery queue")
+        except asyncio.CancelledError:
+            log.info("Delivery polling stopped")
+
+    def _process_pending_deliveries(self) -> None:
+        pending = get_pending_deliveries(self._db, "wa")
+        if not pending:
+            return
+
+        for delivery in pending:
+            chat_jid_str = delivery.conversation.removeprefix("wa-")
+            try:
+                jid = self._build_jid(chat_jid_str)
+                self._outgoing_queue.send(self._client, jid, delivery.message)
+                mark_delivered(self._db, delivery.id)
+                log.info("Delivered task result to %s", chat_jid_str)
+            except Exception:
+                mark_delivery_failed(self._db, delivery.id, "send failed")
+                log.exception("Failed to deliver to %s", chat_jid_str)
 
     @staticmethod
     def _build_jid(chat_jid_str: str) -> Any:
