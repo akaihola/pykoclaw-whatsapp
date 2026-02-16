@@ -82,6 +82,18 @@ The agent has access to two WhatsApp-specific tools:
 
 These are available alongside the core pykoclaw tools (task scheduling, etc.).
 
+## Delivery queue
+
+When the pykoclaw scheduler runs a scheduled task, results are written to a
+`delivery_queue` table in SQLite. The WhatsApp plugin polls this queue every 10
+seconds for items with channel prefix `wa`, then delivers them via
+`OutgoingQueue.send()` through the live Neonize connection. Delivered items are
+marked complete; failures are logged.
+
+This means a user can schedule a task from WhatsApp and receive the result back
+in the same chat when it completes — even if the agent session that ran the task
+has ended.
+
 ## Architecture
 
 ```
