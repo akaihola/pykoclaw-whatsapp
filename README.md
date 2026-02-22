@@ -274,11 +274,11 @@ leaking raw Markdown syntax.
 | `### Sub`                 | `*Sub*` (title-case bold)    |
 | `---`                     | `───────────────────────────` |
 | `- item` / `1. item`      | `- item` / `1. item`         |
-| Nested lists              | `  • sub-item`               |
+| Nested lists              | `⠀⠀⠀⠀• sub-item`            |
 | `- [ ] task` / `- [x]`    | `⬜ task` / `✅ task`        |
 | `> quote`                 | `> quote`                    |
 | `[text](url)`             | `text (url)`                 |
-| Markdown table            | Unicode box table in ` ``` ` |
+| Markdown table            | ASCII box table in ` ``` `   |
 | `![alt](img.png)`         | *(stripped)*                 |
 
 This conversion applies to both agent replies and scheduled task deliveries.
