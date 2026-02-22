@@ -133,7 +133,7 @@ def test_multiple_headings_blank_line_separation() -> None:
 
 
 def test_hr_emits_unicode_line() -> None:
-    """--- → 27 × ─, surrounded by blank lines."""
+    """--- → 25 × ─, surrounded by blank lines."""
     md = "Before\n\n---\n\nAfter"
     result = markdown_to_whatsapp(md)
     rule = HR_CHAR * HR_LEN
@@ -151,34 +151,30 @@ def test_hr_emits_unicode_line() -> None:
 
 
 def test_bullet_list() -> None:
-    """- item → - item (pass-through at depth 1)."""
+    """Tight bullet list — no blank lines between items."""
     result = markdown_to_whatsapp("- apple\n- banana\n- cherry")
-    assert "- apple" in result
-    assert "- banana" in result
-    assert "- cherry" in result
+    assert result == "- apple\n- banana\n- cherry"
 
 
 def test_numbered_list() -> None:
-    """1. item → 1. item (pass-through)."""
+    """Tight numbered list — no blank lines between items."""
     result = markdown_to_whatsapp("1. first\n2. second\n3. third")
-    assert "1. first" in result
-    assert "2. second" in result
-    assert "3. third" in result
+    assert result == "1. first\n2. second\n3. third"
 
 
 def test_nested_list_depth_2() -> None:
-    """Nested list at depth 2 uses 2-space + • bullet."""
+    """Nested list at depth 2 uses 4 × Braille-blank indent + • bullet."""
     md = "- top\n  - sub"
     result = markdown_to_whatsapp(md)
     assert "- top" in result
-    assert "  \u2022 sub" in result
+    assert "\u2800\u2800\u2800\u2800\u2022 sub" in result
 
 
 def test_nested_list_depth_3() -> None:
-    """Nested list at depth 3 uses 4-space + • bullet."""
+    """Nested list at depth 3 uses 8 × Braille-blank indent + • bullet."""
     md = "- top\n  - mid\n    - deep"
     result = markdown_to_whatsapp(md)
-    assert "    \u2022 deep" in result
+    assert "\u2800\u2800\u2800\u2800\u2800\u2800\u2800\u2800\u2022 deep" in result
 
 
 # ---------------------------------------------------------------------------
@@ -233,24 +229,45 @@ def test_bare_link_url_only() -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_table_renders_as_unicode_box_in_fence() -> None:
-    """Markdown table → unicode box table wrapped in ``` fence."""
+def test_table_renders_as_ascii_box_in_fence() -> None:
+    """Markdown table → ASCII box table wrapped in ``` fence."""
     md = "| Name  | Score |\n|-------|-------|\n| Alice | 42    |\n| Bob   | 17    |"
     result = markdown_to_whatsapp(md)
     assert "```" in result
-    assert "│" in result  # box drawing vertical bar
-    assert "─" in result  # box drawing horizontal bar
+    assert "|" in result
+    assert "+" in result
     assert "Alice" in result
     assert "Bob" in result
     assert "42" in result
 
 
-def test_table_header_divider() -> None:
-    """Header row is separated from body by ├─┼─┤ divider."""
+def test_table_text_before_borders() -> None:
+    """Cell text must appear inside the table, not before the border lines."""
     md = "| A | B |\n|---|---|\n| 1 | 2 |"
     result = markdown_to_whatsapp(md)
-    assert "├" in result
-    assert "┤" in result
+    # The ``` fence must open before any cell content appears
+    fence_pos = result.index("```")
+    for cell in ("A", "B", "1", "2"):
+        cell_pos = result.index(cell)
+        assert cell_pos > fence_pos, (
+            f"Cell content {cell!r} appears before opening ``` fence"
+        )
+
+
+def test_table_header_divider() -> None:
+    """Header row is separated from body by +---+---+ divider."""
+    md = "| A | B |\n|---|---|\n| 1 | 2 |"
+    result = markdown_to_whatsapp(md)
+    lines = result.strip().splitlines()
+    # Find header row index (after opening +---+ line)
+    divider_lines = [
+        i for i, ln in enumerate(lines) if ln.startswith("+") and "-" in ln
+    ]
+    # There should be 3 dividers: top, header-body separator, bottom
+    assert len(divider_lines) == 3, f"Expected 3 divider lines, got: {divider_lines}"
+    # Header row sits between first and second dividers
+    header_row = lines[divider_lines[0] + 1]
+    assert "A" in header_row and "B" in header_row
 
 
 # ---------------------------------------------------------------------------

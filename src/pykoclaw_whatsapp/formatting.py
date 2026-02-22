@@ -28,22 +28,22 @@ tasklists_plugin(_md)
 # ---------------------------------------------------------------------------
 
 HEADING_RULE_CHAR = "\u2594"  # ▔ UPPER ONE EIGHTH BLOCK
-HEADING_RULE_LEN = 27
+HEADING_RULE_LEN = 25
 HR_CHAR = "\u2500"  # ─ BOX DRAWINGS LIGHT HORIZONTAL
-HR_LEN = 27
+HR_LEN = 25
 
-# Box-drawing chars for tables
-_TBL_H = "─"
-_TBL_V = "│"
-_TBL_TL = "┌"
-_TBL_TR = "┐"
-_TBL_BL = "└"
-_TBL_BR = "┘"
-_TBL_T = "┬"
-_TBL_B = "┴"
-_TBL_ML = "├"
-_TBL_MR = "┤"
-_TBL_MC = "┼"
+# ASCII chars for tables (unicode box-drawing misaligns on Android WhatsApp)
+_TBL_H = "-"
+_TBL_V = "|"
+_TBL_TL = "+"
+_TBL_TR = "+"
+_TBL_BL = "+"
+_TBL_BR = "+"
+_TBL_T = "+"
+_TBL_B = "+"
+_TBL_ML = "+"
+_TBL_MR = "+"
+_TBL_MC = "+"
 
 
 # ---------------------------------------------------------------------------
@@ -106,10 +106,13 @@ class _WhatsAppRenderer:
             t = tok.type
 
             # --- paragraphs ---
+            # Inside tight lists markdown-it marks paragraph_open/close as
+            # hidden — skip them so tight list items don't get blank lines.
             if t == "paragraph_open":
                 pass
             elif t == "paragraph_close":
-                self._ensure_blank_line()
+                if not tok.hidden:
+                    self._ensure_blank_line()
 
             # --- headings ---
             elif t == "heading_open":
@@ -178,10 +181,14 @@ class _WhatsAppRenderer:
             elif t == "list_item_close":
                 pass
 
-            # --- inline (paragraph / list item / blockquote content) ---
+            # --- inline (paragraph / list item / blockquote / cell content) ---
             elif t == "inline":
                 text = self._render_inline(tok.children or [])
-                if self._in_blockquote:
+                if self._in_cell:
+                    # Cell content — route via _emit() so it lands in
+                    # _current_cell_parts, not the main output.
+                    self._emit(text)
+                elif self._in_blockquote:
                     # Prefix each line with "> "
                     lines = text.splitlines()
                     prefixed = "\n".join("> " + ln for ln in lines)
@@ -201,7 +208,9 @@ class _WhatsAppRenderer:
                         ):
                             counter = self._ordered_stack[self._list_depth - 1]
                             counter[0] += 1
-                            prefix = "  " * (self._list_depth - 1) + f"{counter[0]}. "
+                            prefix = (
+                                _INDENT * (self._list_depth - 1) + f"{counter[0]}. "
+                            )
                         self._parts.append(prefix + text + "\n")
                 else:
                     self._parts.append(text)
@@ -396,13 +405,16 @@ def _extract_task(children: list) -> str | None:
     return f"{emoji} {text}"
 
 
+_INDENT = "\u2800\u2800\u2800\u2800"  # 4 × Braille blank — not stripped by WhatsApp
+
+
 def _list_prefix(depth: int, task: bool = False) -> str:
     """Return the bullet prefix string for a list item at the given depth."""
     if task:
         return ""  # task items handle their own prefix
     if depth == 1:
         return "- "
-    indent = "  " * (depth - 1)
+    indent = _INDENT * (depth - 1)
     return f"{indent}\u2022 "  # • bullet
 
 
