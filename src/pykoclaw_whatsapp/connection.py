@@ -15,6 +15,7 @@ import logging
 import re
 import signal
 import threading
+from pathlib import Path
 from textwrap import dedent
 from typing import Any
 
@@ -26,6 +27,7 @@ from pykoclaw.config import settings as core_settings
 from pykoclaw.db import (
     DbConnection,
     get_pending_deliveries,
+    init_db,
     mark_delivered,
     mark_delivery_failed,
 )
@@ -96,6 +98,27 @@ class WhatsAppConnection:
         self._routing = routing or load_routing_config(
             self._config.agent_routes, self._config.trigger_name
         )
+        self._agent_dbs: dict[str, DbConnection] = {}
+
+    def _get_agent_db(self, agent: AgentConfig) -> DbConnection:
+        """Get or lazily create a DB connection for an agent's data directory.
+
+        If the agent has its own ``data_dir``, open its DB (creating core
+        tables if needed). Otherwise fall back to the bridge DB.
+        """
+        if agent.data_dir is None:
+            return self._db
+        if agent.name not in self._agent_dbs:
+            db_path = agent.data_dir / "pykoclaw.db"
+            db = init_db(db_path)
+            db.execute("PRAGMA journal_mode=WAL")
+            self._agent_dbs[agent.name] = db
+            log.info("Opened agent DB: %s → %s", agent.name, db_path)
+        return self._agent_dbs[agent.name]
+
+    def _get_agent_data_dir(self, agent: AgentConfig) -> Path:
+        """Return the data directory for an agent (falls back to core settings)."""
+        return agent.data_dir or core_settings.data
 
     def run(self) -> None:
         """Block the main thread on neonize ``connect()`` until Ctrl-C.
@@ -299,12 +322,15 @@ class WhatsAppConnection:
             f"Decide whether to reply, use tools silently, or do nothing."
         )
 
+        agent_db = self._get_agent_db(agent)
+        agent_data_dir = self._get_agent_data_dir(agent)
+
         result = await dispatch_to_agent(
             prompt=prompt,
             channel_prefix=f"wa-{agent.name.lower()}",
             channel_id=chat_jid,
-            db=self._db,
-            data_dir=core_settings.data,
+            db=agent_db,
+            data_dir=agent_data_dir,
             system_prompt=system_prompt,
             extra_mcp_servers=self._extra_mcp_servers,
             model=agent.model,

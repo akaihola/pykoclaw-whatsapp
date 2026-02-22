@@ -1,16 +1,17 @@
 """WhatsApp multi-agent group routing configuration.
 
 Maps WhatsApp group JIDs to one or more agent personalities. Each agent has
-a trigger name (for @mentions) and an optional model override. Groups not
-listed in the routes table use the default agent.
+a trigger name (for @mentions), an optional model override, and its own
+data directory (DB, conversations, tools).
 
 Config file format (JSON)::
 
     {
         "default_agent": "Ressu",
         "agents": {
-            "Ressu": {},
-            "Tyko":  {"model": "claude-opus-4-6"}
+            "Ressu": {"data_dir": "/home/agent/pipsa"},
+            "Tyko":  {"data_dir": "/home/agent/my-knowledge",
+                       "model": "claude-sonnet-4-6"}
         },
         "routes": {
             "120363...@g.us": ["Ressu"],
@@ -36,6 +37,7 @@ class AgentConfig:
 
     name: str
     model: str | None = None
+    data_dir: Path | None = None
 
 
 @dataclass
@@ -105,9 +107,11 @@ def load_routing_config(path: Path | None, default_trigger: str) -> RoutingConfi
 
     agents: dict[str, AgentConfig] = {}
     for name, cfg in data.get("agents", {}).items():
+        raw_dir = cfg.get("data_dir")
         agents[name] = AgentConfig(
             name=name,
             model=cfg.get("model"),
+            data_dir=Path(raw_dir) if raw_dir else None,
         )
 
     default_name = data.get("default_agent", default_trigger)
