@@ -43,12 +43,17 @@ class WhatsAppPlugin(PykoClawPluginBase):
 
             # neonize.utils.log calls basicConfig(level=INFO) on import.
             # Allow overriding via PYKOCLAW_LOG_LEVEL (e.g. DEBUG).
+            # We scope DEBUG to our own loggers to avoid whatsmeow/nio noise.
             log_level = getattr(
                 logging,
                 os.getenv("PYKOCLAW_LOG_LEVEL", "INFO").upper(),
                 logging.INFO,
             )
-            logging.getLogger().setLevel(log_level)
+            if log_level < logging.INFO:
+                for ns in ("pykoclaw", "pykoclaw_whatsapp", "pykoclaw_messaging"):
+                    logging.getLogger(ns).setLevel(log_level)
+            else:
+                logging.getLogger().setLevel(log_level)
 
             db = init_db(settings.db_path)
             db.execute("PRAGMA journal_mode=WAL")
