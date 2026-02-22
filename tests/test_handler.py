@@ -192,6 +192,7 @@ def test_extract_text_returns_none_for_unsupported() -> None:
 def _make_handler(
     db: sqlite3.Connection,
     trigger_name: str = "Andy",
+    trigger_names: list[str] | None = None,
     self_jid: str | None = None,
 ) -> tuple[MessageHandler, Mock]:
     from neonize.utils.jid import Jid2String
@@ -209,7 +210,7 @@ def _make_handler(
     handler = MessageHandler(
         db=db,
         outgoing_queue=Mock(),
-        trigger_name=trigger_name,
+        trigger_names=trigger_names or [trigger_name],
         loop=loop,
         batch_accumulator=batch_acc,
     )

@@ -94,7 +94,7 @@ async def test_session_resumption(
     _seed_messages(db, chat_jid)
     db.execute(
         "INSERT INTO conversations (name, session_id, cwd, created_at) VALUES (?, ?, ?, ?)",
-        (f"wa-{chat_jid}", "ses_abc", "/tmp", "2024-01-01"),
+        ("wa-andy-123@s.whatsapp.net", "ses_abc", "/tmp", "2024-01-01"),
     )
     db.commit()
 
@@ -103,7 +103,7 @@ async def test_session_resumption(
         await connection._handle_agent_trigger(chat_jid)
 
     call_kwargs = mock_dispatch.call_args.kwargs
-    assert call_kwargs["channel_prefix"] == "wa"
+    assert call_kwargs["channel_prefix"] == "wa-andy"
     assert call_kwargs["channel_id"] == chat_jid
 
 
@@ -119,7 +119,7 @@ async def test_session_resumption_no_existing(
         await connection._handle_agent_trigger(chat_jid)
 
     call_kwargs = mock_dispatch.call_args.kwargs
-    assert call_kwargs["channel_prefix"] == "wa"
+    assert call_kwargs["channel_prefix"] == "wa-andy"
     assert call_kwargs["channel_id"] == chat_jid
 
 
@@ -333,3 +333,192 @@ async def test_extract_reply_unit() -> None:
     result = _extract_reply("Reasoning\n<reply>Answer</reply>\nMore reasoning")
     assert result == "Answer"
     assert "Reasoning" not in result
+
+
+# --- Multi-agent routing tests ---
+
+
+@pytest.fixture
+def multi_agent_connection(
+    db: sqlite3.Connection, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> WhatsAppConnection:
+    """Connection with two agents: Ressu (default) and Tyko, both in group-multi."""
+    from pykoclaw_whatsapp.config import WhatsAppSettings
+    from pykoclaw_whatsapp.routing import AgentConfig, RoutingConfig
+
+    monkeypatch.chdir(tmp_path)
+
+    routing = RoutingConfig(
+        default_agent="Ressu",
+        agents={
+            "Ressu": AgentConfig(name="Ressu"),
+            "Tyko": AgentConfig(name="Tyko", model="claude-opus-4-6"),
+        },
+        routes={
+            "group-multi@g.us": ["Ressu", "Tyko"],
+            "group-tyko@g.us": ["Tyko"],
+        },
+    )
+
+    config = WhatsAppSettings(trigger_name="Ressu")
+    conn = WhatsAppConnection(db=db, config=config, routing=routing)
+    conn._client = Mock()
+    return conn
+
+
+@pytest.mark.asyncio
+async def test_multi_agent_dispatches_to_both(
+    db: sqlite3.Connection, multi_agent_connection: WhatsAppConnection
+) -> None:
+    """Multi-agent group dispatches to each agent sequentially."""
+    chat_jid = "group-multi@g.us"
+    _seed_messages(db, chat_jid)
+
+    mock_dispatch = AsyncMock(return_value=_make_result("<reply>Hi</reply>"))
+    with patch(MOCK_TARGET, mock_dispatch):
+        await multi_agent_connection._handle_agent_trigger(chat_jid)
+
+    assert mock_dispatch.call_count == 2
+    prefixes = [c.kwargs["channel_prefix"] for c in mock_dispatch.call_args_list]
+    assert "wa-ressu" in prefixes
+    assert "wa-tyko" in prefixes
+
+
+@pytest.mark.asyncio
+async def test_multi_agent_message_prefixed(
+    db: sqlite3.Connection, multi_agent_connection: WhatsAppConnection
+) -> None:
+    """In multi-agent groups, outgoing messages get [AgentName]: prefix."""
+    chat_jid = "group-multi@g.us"
+    _seed_messages(db, chat_jid)
+
+    mock_dispatch = AsyncMock(
+        return_value=_make_result("<reply>Hello from agent</reply>")
+    )
+    with patch(MOCK_TARGET, mock_dispatch):
+        multi_agent_connection._outgoing_queue = Mock()
+        await multi_agent_connection._handle_agent_trigger(chat_jid)
+
+    calls = multi_agent_connection._outgoing_queue.send.call_args_list
+    assert len(calls) == 2
+    texts = [c[0][2] for c in calls]
+    assert any(t.startswith("[Ressu]: ") for t in texts)
+    assert any(t.startswith("[Tyko]: ") for t in texts)
+
+
+@pytest.mark.asyncio
+async def test_single_agent_no_prefix(
+    db: sqlite3.Connection, multi_agent_connection: WhatsAppConnection
+) -> None:
+    """Single-agent groups don't get message prefixing."""
+    chat_jid = "group-tyko@g.us"
+    _seed_messages(db, chat_jid)
+
+    mock_dispatch = AsyncMock(return_value=_make_result("<reply>Hello</reply>"))
+    with patch(MOCK_TARGET, mock_dispatch):
+        multi_agent_connection._outgoing_queue = Mock()
+        await multi_agent_connection._handle_agent_trigger(chat_jid)
+
+    assert mock_dispatch.call_count == 1
+    sent_text = multi_agent_connection._outgoing_queue.send.call_args[0][2]
+    assert sent_text == "Hello"
+    assert not sent_text.startswith("[")
+
+
+@pytest.mark.asyncio
+async def test_unrouted_group_uses_default(
+    db: sqlite3.Connection, multi_agent_connection: WhatsAppConnection
+) -> None:
+    """Groups not in the routing table use the default agent."""
+    chat_jid = "unknown-group@g.us"
+    _seed_messages(db, chat_jid)
+
+    mock_dispatch = AsyncMock(return_value=_make_result("<reply>Hi</reply>"))
+    with patch(MOCK_TARGET, mock_dispatch):
+        await multi_agent_connection._handle_agent_trigger(chat_jid)
+
+    assert mock_dispatch.call_count == 1
+    assert mock_dispatch.call_args.kwargs["channel_prefix"] == "wa-ressu"
+
+
+@pytest.mark.asyncio
+async def test_multi_agent_system_prompt_mentions_others(
+    db: sqlite3.Connection, multi_agent_connection: WhatsAppConnection
+) -> None:
+    """Multi-agent group system prompts include awareness of other agents."""
+    chat_jid = "group-multi@g.us"
+    _seed_messages(db, chat_jid)
+
+    mock_dispatch = AsyncMock(return_value=_make_result(""))
+    with patch(MOCK_TARGET, mock_dispatch):
+        await multi_agent_connection._handle_agent_trigger(chat_jid)
+
+    # Ressu's prompt should mention Tyko and vice versa
+    ressu_call = next(
+        c
+        for c in mock_dispatch.call_args_list
+        if c.kwargs["channel_prefix"] == "wa-ressu"
+    )
+    tyko_call = next(
+        c
+        for c in mock_dispatch.call_args_list
+        if c.kwargs["channel_prefix"] == "wa-tyko"
+    )
+    assert "Tyko" in ressu_call.kwargs["system_prompt"]
+    assert "Ressu" in tyko_call.kwargs["system_prompt"]
+    assert "multi-agent" in ressu_call.kwargs["system_prompt"].lower()
+
+
+@pytest.mark.asyncio
+async def test_multi_agent_model_override(
+    db: sqlite3.Connection, multi_agent_connection: WhatsAppConnection
+) -> None:
+    """Agent-specific model overrides are passed through."""
+    chat_jid = "group-tyko@g.us"
+    _seed_messages(db, chat_jid)
+
+    mock_dispatch = AsyncMock(return_value=_make_result(""))
+    with patch(MOCK_TARGET, mock_dispatch):
+        await multi_agent_connection._handle_agent_trigger(chat_jid)
+
+    assert mock_dispatch.call_args.kwargs["model"] == "claude-opus-4-6"
+
+
+@pytest.mark.asyncio
+async def test_hard_mention_specific_agent(
+    db: sqlite3.Connection, multi_agent_connection: WhatsAppConnection
+) -> None:
+    """Hard mention of one agent in multi-agent group only flags that agent."""
+    chat_jid = "group-multi@g.us"
+    # Seed a message that mentions Tyko specifically
+    db.execute(
+        dedent("""\
+            INSERT INTO wa_messages (chat_jid, sender, text, timestamp, is_from_me)
+            VALUES (?, ?, ?, ?, 0)"""),
+        (chat_jid, "User", "@Tyko what do you think?", "2024-01-01T12:00:00Z"),
+    )
+    db.execute(
+        dedent("""\
+            INSERT OR IGNORE INTO wa_chats (jid, last_timestamp)
+            VALUES (?, ?)"""),
+        (chat_jid, "2024-01-01T12:00:00Z"),
+    )
+    db.commit()
+
+    mock_dispatch = AsyncMock(return_value=_make_result(""))
+    with patch(MOCK_TARGET, mock_dispatch):
+        await multi_agent_connection._handle_agent_trigger(chat_jid, hard_mention=True)
+
+    # Tyko's system prompt should have "MUST reply", Ressu's should not
+    tyko_call = next(
+        c
+        for c in mock_dispatch.call_args_list
+        if c.kwargs["channel_prefix"] == "wa-tyko"
+    )
+    ressu_call = next(
+        c
+        for c in mock_dispatch.call_args_list
+        if c.kwargs["channel_prefix"] == "wa-ressu"
+    )
+    assert "MUST reply" in tyko_call.kwargs["system_prompt"]
+    assert "MUST reply" not in ressu_call.kwargs["system_prompt"]

@@ -24,6 +24,10 @@ class WhatsAppSettings(BaseSettings):
         / "session.db"
     )
     batch_window_seconds: int = Field(default=90)
+    agent_routes: Path | None = Field(
+        default=None,
+        description="Path to agent routing JSON file for multi-agent groups.",
+    )
 
     model_config = {
         "env_prefix": "PYKOCLAW_WA_",

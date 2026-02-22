@@ -47,12 +47,22 @@ class WhatsAppPlugin(PykoClawPluginBase):
             mcp_servers = plugin.get_mcp_servers(db, "whatsapp")
 
             from .config import get_config
+            from .routing import load_routing_config
 
             wa_config = get_config()
-            click.echo(f"Data directory: {settings.data}")
-            click.echo(f"Trigger name:   {wa_config.trigger_name}")
+            routing = load_routing_config(
+                wa_config.agent_routes, wa_config.trigger_name
+            )
 
-            conn = WhatsAppConnection(db=db, extra_mcp_servers=mcp_servers)
+            click.echo(f"Data directory: {settings.data}")
+            click.echo(f"Agents:         {', '.join(routing.agents)}")
+            click.echo(f"Group routes:   {len(routing.routes)}")
+            for jid, names in routing.routes.items():
+                click.echo(f"  {jid} → {', '.join(names)}")
+
+            conn = WhatsAppConnection(
+                db=db, extra_mcp_servers=mcp_servers, routing=routing
+            )
             conn.run()
 
         @whatsapp.command()

@@ -2,6 +2,10 @@
 
 Ported from NanoClaw connection pattern (index.ts:777-855).
 Manages Neonize client, event registration, and the asyncio event loop.
+
+Supports multi-agent group routing: different WhatsApp groups can be mapped
+to different agent personalities, and multi-agent groups get message
+prefixing and loop prevention.
 """
 
 from __future__ import annotations
@@ -31,11 +35,13 @@ from .config import WhatsAppSettings, get_config
 from .handler import (
     BatchAccumulator,
     MessageHandler,
+    find_hard_mentions,
     format_xml_messages,
     get_new_messages_for_chat,
     update_agent_cursor,
 )
 from .queue import OutgoingQueue
+from .routing import AgentConfig, RoutingConfig, load_routing_config
 
 log = logging.getLogger(__name__)
 
@@ -63,6 +69,9 @@ class WhatsAppConnection:
 
     Handles connection events (QR, connect, disconnect), registers message
     handlers, and bridges the Go-thread Neonize callbacks into asyncio.
+
+    Supports multi-agent group routing: each group can be mapped to one or
+    more agent personalities via a routing config.
     """
 
     DELIVERY_POLL_INTERVAL_S = 10
@@ -73,6 +82,7 @@ class WhatsAppConnection:
         db: DbConnection,
         config: WhatsAppSettings | None = None,
         extra_mcp_servers: dict[str, Any] | None = None,
+        routing: RoutingConfig | None = None,
     ) -> None:
         self._config = config or get_config()
         self._db = db
@@ -83,6 +93,9 @@ class WhatsAppConnection:
         self._handler: MessageHandler | None = None
         self._batch_accumulator: BatchAccumulator | None = None
         self._delivery_task: asyncio.Task[None] | None = None
+        self._routing = routing or load_routing_config(
+            self._config.agent_routes, self._config.trigger_name
+        )
 
     def run(self) -> None:
         """Block the main thread on neonize ``connect()`` until Ctrl-C.
@@ -102,7 +115,7 @@ class WhatsAppConnection:
         self._handler = MessageHandler(
             db=self._db,
             outgoing_queue=self._outgoing_queue,
-            trigger_name=self._config.trigger_name,
+            trigger_names=self._routing.all_trigger_names,
             loop=self._loop,
             batch_accumulator=self._batch_accumulator,
             agent_callback=self._handle_agent_trigger,
@@ -117,6 +130,12 @@ class WhatsAppConnection:
         self._register_events(self._client)
 
         log.info("Starting WhatsApp connection...")
+        log.info(
+            "Routing: %d agents (%s), %d group routes",
+            len(self._routing.agents),
+            ", ".join(self._routing.agents),
+            len(self._routing.routes),
+        )
 
         signal.signal(signal.SIGINT, signal.SIG_DFL)
         self._client.connect()
@@ -159,16 +178,24 @@ class WhatsAppConnection:
             if self._handler:
                 self._handler.on_message(_client, event)
 
-    def _build_system_prompt(self, chat_jid: str, *, hard_mention: bool) -> str:
-        trigger = self._config.trigger_name
+    def _build_system_prompt(
+        self,
+        agent: AgentConfig,
+        chat_jid: str,
+        *,
+        hard_mention: bool,
+        is_multi_agent: bool,
+        other_agent_names: list[str] | None = None,
+    ) -> str:
+        trigger = agent.name
         base = dedent(
             f"""\
             You are {trigger}, an ambient participant in a WhatsApp chat ({chat_jid}).
-            
+
             When you choose to reply, wrap your ENTIRE reply in `<reply>` tags. Text \
             outside these tags will NOT be delivered to the chat. Tool-call reasoning \
             and internal notes must NOT be wrapped in `<reply>` tags.
-            
+
             You observe conversations silently. In the vast majority of batches, you \
             should produce NO text output. Err heavily toward silence.
             Only reply when: (a) you are directly addressed by name or @mention, \
@@ -185,6 +212,17 @@ class WhatsAppConnection:
             forms in non-English languages. When someone addresses you by any variation \
             of your name, treat it as a direct address and reply."""
         )
+        if is_multi_agent and other_agent_names:
+            others = ", ".join(other_agent_names)
+            base += dedent(
+                f"""
+
+                This is a multi-agent group. Other AI agents in this chat: {others}.
+                Messages prefixed with [AgentName]: are from another AI agent.
+                Do NOT respond to another agent's messages — even if they address you.
+                Only after a human participant sends a message should you consider
+                whether to speak. Never engage in agent-to-agent dialogue."""
+            )
         if hard_mention:
             base += (
                 "\n\nThis batch contains a direct @mention of your name "
@@ -197,45 +235,90 @@ class WhatsAppConnection:
         chat_jid: str,
         hard_mention: bool = False,
     ) -> None:
-        try:
-            messages = get_new_messages_for_chat(self._db, chat_jid)
-            if not messages:
-                return
+        """Handle a batch flush by dispatching to all mapped agents sequentially."""
+        agents = self._routing.agents_for_chat(chat_jid)
+        is_multi = len(agents) > 1
 
-            xml_context = format_xml_messages(messages)
+        messages = get_new_messages_for_chat(self._db, chat_jid)
+        if not messages:
+            return
 
-            system_prompt = self._build_system_prompt(
-                chat_jid, hard_mention=hard_mention
+        # Determine which agents are specifically hard-mentioned in the batch
+        all_text = " ".join(text for _, _, text in messages)
+        mentioned_agents = find_hard_mentions(all_text, self._routing.all_trigger_names)
+
+        for agent in agents:
+            agent_hard_mention = hard_mention and (
+                not mentioned_agents or agent.name in mentioned_agents
             )
+            try:
+                await self._dispatch_for_agent(
+                    chat_jid=chat_jid,
+                    agent=agent,
+                    messages=messages,
+                    is_multi_agent=is_multi,
+                    hard_mention=agent_hard_mention,
+                )
+            except Exception:
+                log.exception(
+                    "Error in agent trigger for %s (agent=%s)", chat_jid, agent.name
+                )
 
-            prompt = (
-                f"New message batch from WhatsApp chat:\n\n{xml_context}\n\n"
-                f"Decide whether to reply, use tools silently, or do nothing."
-            )
+        # Advance cursor after all agents have processed
+        last_msg_ts = messages[-1][1] if messages else ""
+        if last_msg_ts:
+            update_agent_cursor(self._db, chat_jid, last_msg_ts)
 
-            result = await dispatch_to_agent(
-                prompt=prompt,
-                channel_prefix="wa",
-                channel_id=chat_jid,
-                db=self._db,
-                data_dir=core_settings.data,
-                system_prompt=system_prompt,
-                extra_mcp_servers=self._extra_mcp_servers,
-            )
+    async def _dispatch_for_agent(
+        self,
+        *,
+        chat_jid: str,
+        agent: AgentConfig,
+        messages: list[tuple[str, str, str]],
+        is_multi_agent: bool,
+        hard_mention: bool,
+    ) -> None:
+        """Dispatch a message batch to a single agent."""
+        other_names = [
+            a.name
+            for a in self._routing.agents_for_chat(chat_jid)
+            if a.name != agent.name
+        ]
 
-            extracted = _extract_reply(result.full_text)
-            if extracted:
-                jid = self._build_jid(chat_jid)
-                self._outgoing_queue.send(self._client, jid, extracted)
-                log.info("Agent response sent to %s", chat_jid)
-            else:
-                log.info("Agent chose silence for %s", chat_jid)
+        xml_context = format_xml_messages(messages)
+        system_prompt = self._build_system_prompt(
+            agent,
+            chat_jid,
+            hard_mention=hard_mention,
+            is_multi_agent=is_multi_agent,
+            other_agent_names=other_names if is_multi_agent else None,
+        )
 
-            last_msg_ts = messages[-1][1] if messages else ""
-            if last_msg_ts:
-                update_agent_cursor(self._db, chat_jid, last_msg_ts)
-        except Exception:
-            log.exception("Error in agent trigger for %s", chat_jid)
+        prompt = (
+            f"New message batch from WhatsApp chat:\n\n{xml_context}\n\n"
+            f"Decide whether to reply, use tools silently, or do nothing."
+        )
+
+        result = await dispatch_to_agent(
+            prompt=prompt,
+            channel_prefix=f"wa-{agent.name.lower()}",
+            channel_id=chat_jid,
+            db=self._db,
+            data_dir=core_settings.data,
+            system_prompt=system_prompt,
+            extra_mcp_servers=self._extra_mcp_servers,
+            model=agent.model,
+        )
+
+        extracted = _extract_reply(result.full_text)
+        if extracted:
+            if is_multi_agent:
+                extracted = f"[{agent.name}]: {extracted}"
+            jid = self._build_jid(chat_jid)
+            self._outgoing_queue.send(self._client, jid, extracted)
+            log.info("Agent %s response sent to %s", agent.name, chat_jid)
+        else:
+            log.info("Agent %s chose silence for %s", agent.name, chat_jid)
 
     async def _start_delivery_polling(self) -> None:
         self._delivery_task = asyncio.create_task(self._delivery_poll_loop())
@@ -258,12 +341,28 @@ class WhatsAppConnection:
             return
 
         for delivery in pending:
-            chat_jid_str = delivery.conversation.removeprefix("wa-")
+            agent, chat_jid_str = self._routing.parse_conversation(
+                delivery.conversation
+            )
+            if not agent or not chat_jid_str:
+                # Legacy format fallback: wa-{jid}
+                chat_jid_str = delivery.conversation.removeprefix("wa-")
+                agent = self._routing.agents.get(self._routing.default_agent)
+
+            is_multi = self._routing.is_multi_agent(chat_jid_str)
+
             try:
                 jid = self._build_jid(chat_jid_str)
-                self._outgoing_queue.send(self._client, jid, delivery.message)
+                message = delivery.message
+                if is_multi and agent:
+                    message = f"[{agent.name}]: {message}"
+                self._outgoing_queue.send(self._client, jid, message)
                 mark_delivered(self._db, delivery.id)
-                log.info("Delivered task result to %s", chat_jid_str)
+                log.info(
+                    "Delivered task result to %s (agent=%s)",
+                    chat_jid_str,
+                    agent.name if agent else "unknown",
+                )
             except Exception:
                 mark_delivery_failed(self._db, delivery.id, "send failed")
                 log.exception("Failed to deliver to %s", chat_jid_str)

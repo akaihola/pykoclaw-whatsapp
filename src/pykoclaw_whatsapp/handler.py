@@ -59,6 +59,11 @@ def _is_hard_mention(text: str, trigger_name: str) -> bool:
     return _HARD_MENTION_CACHE[trigger_name].search(text) is not None
 
 
+def find_hard_mentions(text: str, trigger_names: list[str]) -> set[str]:
+    """Return the set of trigger names hard-mentioned in *text*."""
+    return {name for name in trigger_names if _is_hard_mention(text, name)}
+
+
 class BatchAccumulator:
     """Per-chat message batch accumulator with timer-based flushing.
 
@@ -253,14 +258,14 @@ class MessageHandler:
         *,
         db: DbConnection,
         outgoing_queue: OutgoingQueue,
-        trigger_name: str,
+        trigger_names: list[str],
         loop: asyncio.AbstractEventLoop,
         batch_accumulator: BatchAccumulator,
         agent_callback: object | None = None,
     ) -> None:
         self._db = db
         self._outgoing_queue = outgoing_queue
-        self._trigger_name = trigger_name
+        self._trigger_names = trigger_names
         self._loop = loop
         self._batch_accumulator = batch_accumulator
         self._agent_callback = agent_callback
@@ -308,7 +313,7 @@ class MessageHandler:
                 and not source.IsGroup
             )
 
-            is_hard_mention = _is_hard_mention(text, self._trigger_name)
+            is_hard_mention = bool(find_hard_mentions(text, self._trigger_names))
 
             if is_self_chat or is_hard_mention:
                 asyncio.run_coroutine_threadsafe(
