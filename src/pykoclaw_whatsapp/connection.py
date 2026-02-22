@@ -35,6 +35,7 @@ from pykoclaw.db import (
 from pykoclaw_messaging import dispatch_to_agent
 
 from .config import WhatsAppSettings, get_config
+from .formatting import markdown_to_whatsapp
 from .handler import (
     BatchAccumulator,
     MessageHandler,
@@ -267,9 +268,20 @@ class WhatsAppConnection:
         all_text = " ".join(text for _, _, text in messages)
         mentioned_agents = find_hard_mentions(all_text, self._routing.all_trigger_names)
 
+        log.debug(
+            "Trigger for %s: hard_mention=%s, messages=%d, mentioned=%s",
+            chat_jid,
+            hard_mention,
+            len(messages),
+            mentioned_agents or "(none — any agent may respond)",
+        )
+
         for agent in agents:
             agent_hard_mention = hard_mention and (
                 not mentioned_agents or agent.name in mentioned_agents
+            )
+            log.debug(
+                "  → agent=%s agent_hard_mention=%s", agent.name, agent_hard_mention
             )
             try:
                 await self._dispatch_for_agent(
@@ -369,8 +381,15 @@ class WhatsAppConnection:
             finally:
                 self._set_chat_presence(chat_jid, composing=False)
 
+        log.info(
+            "Agent %s dispatch done (hard_mention=%s, full_text=%r)",
+            agent.name,
+            hard_mention,
+            result.full_text[:120] if result.full_text else "",
+        )
         extracted = _extract_reply(result.full_text)
         if extracted:
+            extracted = markdown_to_whatsapp(extracted)
             if is_multi_agent:
                 extracted = f"[{agent.name}]: {extracted}"
             jid = self._build_jid(chat_jid)
@@ -430,7 +449,7 @@ class WhatsAppConnection:
 
             try:
                 jid = self._build_jid(chat_jid_str)
-                message = delivery.message
+                message = markdown_to_whatsapp(delivery.message)
                 if is_multi and agent:
                     message = f"[{agent.name}]: {message}"
                 self._outgoing_queue.send(self._client, jid, message)

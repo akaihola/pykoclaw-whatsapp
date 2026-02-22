@@ -315,12 +315,24 @@ class MessageHandler:
 
             is_hard_mention = bool(find_hard_mentions(text, self._trigger_names))
 
+            log.debug(
+                "Received in %s from %r: hard_mention=%s, text=%r",
+                chat_jid,
+                sender,
+                is_hard_mention,
+                text[:120],
+            )
+
             if is_self_chat or is_hard_mention:
+                log.debug(
+                    "Flushing immediately for %s (self_chat=%s)", chat_jid, is_self_chat
+                )
                 asyncio.run_coroutine_threadsafe(
                     self._batch_accumulator.flush_now(chat_jid),
                     self._loop,
                 )
             else:
+                log.debug("Adding to batch window for %s", chat_jid)
                 self._batch_accumulator.add(chat_jid)
         except Exception:
             log.exception("Error handling message")

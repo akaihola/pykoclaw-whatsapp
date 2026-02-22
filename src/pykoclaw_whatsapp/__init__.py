@@ -32,11 +32,33 @@ class WhatsAppPlugin(PykoClawPluginBase):
         @whatsapp.command()
         def run() -> None:
             """Run WhatsApp message listener."""
+            import logging
+            import os
+
             from pykoclaw.config import settings
             from pykoclaw.db import init_db
             from pykoclaw.plugins import run_db_migrations
 
             from .connection import WhatsAppConnection
+
+            # neonize.utils.log calls basicConfig(level=INFO) on import.
+            # Allow overriding via PYKOCLAW_LOG_LEVEL (e.g. DEBUG).
+            # We scope DEBUG to our own loggers to avoid whatsmeow/nio noise.
+            log_level = getattr(
+                logging,
+                os.getenv("PYKOCLAW_LOG_LEVEL", "INFO").upper(),
+                logging.INFO,
+            )
+            if log_level < logging.INFO:
+                for ns in (
+                    "pykoclaw",
+                    "pykoclaw_whatsapp",
+                    "pykoclaw_messaging",
+                    "claude_agent_sdk",
+                ):
+                    logging.getLogger(ns).setLevel(log_level)
+            else:
+                logging.getLogger().setLevel(log_level)
 
             db = init_db(settings.db_path)
             db.execute("PRAGMA journal_mode=WAL")
