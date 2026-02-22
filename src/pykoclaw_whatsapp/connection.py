@@ -219,12 +219,11 @@ class WhatsAppConnection:
             outside these tags will NOT be delivered to the chat. Tool-call reasoning \
             and internal notes must NOT be wrapped in `<reply>` tags.
 
-            You observe conversations silently. In the vast majority of batches, you \
-            should produce NO text output. Err heavily toward silence.
-            Only reply when: (a) you are directly addressed by name or @mention, \
-            (b) there is clear factual misinformation that no one has corrected, or \
-            (c) you have crucial missing knowledge that would significantly help the \
-            conversation.
+            When directly addressed by name or @mention (e.g. "Tyko, can you..." or \
+            "@Tyko help"), you MUST reply — acknowledge the request and respond. \
+            Even if you can't fulfill the request, explain why.
+            When NOT directly addressed, you may stay silent and observe, or reply \
+            only if there's clear factual misinformation or crucial knowledge you have.
             Do NOT volunteer opinions, make small talk, or interject with tangential \
             information. If you choose not to reply, produce no text output at all — \
             do not explain why you are staying silent.
@@ -317,10 +316,14 @@ class WhatsAppConnection:
         prompt = f"New message batch from WhatsApp chat:\n\n{xml_context}\n\n"
         if hard_mention:
             prompt += (
-                "This batch contains a direct @mention of your name "
-                "— you MUST reply using `<reply>` tags.\n\n"
+                "IMPORTANT: You are being directly addressed! "
+                "You MUST reply and your reply MUST be wrapped in <reply> tags. "
+                "Example: <reply>Hello, I can help with that!</reply> "
+                "If you cannot fulfill the request, still reply with an explanation inside <reply> tags. "
+                "Do NOT reply outside of <reply> tags — such replies will be ignored.\n\n"
             )
-        prompt += "Decide whether to reply, use tools silently, or do nothing."
+        else:
+            prompt += "Decide whether to reply, use tools silently, or do nothing."
 
         agent_db = self._get_agent_db(agent)
         agent_data_dir = self._get_agent_data_dir(agent)
