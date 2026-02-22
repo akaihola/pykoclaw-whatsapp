@@ -236,9 +236,9 @@ Each conversation gets its own directory at
 
 | Variable                       | Default                           | Description                               |
 | ------------------------------ | --------------------------------- | ----------------------------------------- |
-| `PYKOCLAW_WA_AUTH_DIR`         | `~/.pykoclaw/whatsapp/auth`       | WhatsApp auth credentials directory       |
+| `PYKOCLAW_WA_AUTH_DIR`         | `~/.local/share/pykoclaw/whatsapp/auth`       | WhatsApp auth credentials directory       |
 | `PYKOCLAW_WA_TRIGGER_NAME`     | `Andy`                            | Default agent name for @mention detection |
-| `PYKOCLAW_WA_SESSION_DB`       | `~/.pykoclaw/whatsapp/session.db` | Neonize session database path             |
+| `PYKOCLAW_WA_SESSION_DB`       | `~/.local/share/pykoclaw/whatsapp/session.db` | Neonize session database path             |
 | `PYKOCLAW_WA_BATCH_WINDOW_SECONDS` | `90`                          | Seconds to accumulate messages before dispatch |
 | `PYKOCLAW_WA_AGENT_ROUTES`     | *(none)*                          | Path to multi-agent routing JSON file     |
 
