@@ -344,6 +344,31 @@ class WhatsAppConnection:
         finally:
             self._set_chat_presence(chat_jid, composing=False)
 
+        # When hard-mentioned, an empty result means the Claude subprocess exited
+        # before processing the request (exit code 0, no text written).  Retry
+        # once with a guaranteed-fresh session so the user gets a response.
+        if hard_mention and not result.full_text:
+            log.warning(
+                "Agent %s returned empty on hard-mention for %s — retrying fresh",
+                agent.name,
+                chat_jid,
+            )
+            self._set_chat_presence(chat_jid, composing=True)
+            try:
+                result = await dispatch_to_agent(
+                    prompt=prompt,
+                    channel_prefix=f"wa-{agent.name.lower()}",
+                    channel_id=chat_jid,
+                    db=agent_db,
+                    data_dir=agent_data_dir,
+                    system_prompt=system_prompt,
+                    extra_mcp_servers=self._extra_mcp_servers,
+                    model=agent.model,
+                    fresh=True,
+                )
+            finally:
+                self._set_chat_presence(chat_jid, composing=False)
+
         extracted = _extract_reply(result.full_text)
         if extracted:
             if is_multi_agent:
