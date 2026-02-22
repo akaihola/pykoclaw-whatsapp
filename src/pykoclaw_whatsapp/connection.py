@@ -35,6 +35,7 @@ from pykoclaw.db import (
 from pykoclaw_messaging import dispatch_to_agent
 
 from .config import WhatsAppSettings, get_config
+from .formatting import markdown_to_whatsapp
 from .handler import (
     BatchAccumulator,
     MessageHandler,
@@ -346,6 +347,7 @@ class WhatsAppConnection:
 
         extracted = _extract_reply(result.full_text)
         if extracted:
+            extracted = markdown_to_whatsapp(extracted)
             if is_multi_agent:
                 extracted = f"[{agent.name}]: {extracted}"
             jid = self._build_jid(chat_jid)
@@ -405,7 +407,7 @@ class WhatsAppConnection:
 
             try:
                 jid = self._build_jid(chat_jid_str)
-                message = delivery.message
+                message = markdown_to_whatsapp(delivery.message)
                 if is_multi and agent:
                     message = f"[{agent.name}]: {message}"
                 self._outgoing_queue.send(self._client, jid, message)
