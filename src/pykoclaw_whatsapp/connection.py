@@ -21,6 +21,7 @@ from typing import Any
 
 from neonize.client import NewClient
 from neonize.events import ConnectedEv, DisconnectedEv, MessageEv, QREv
+from neonize.utils.enum import ChatPresence, ChatPresenceMedia
 from neonize.utils.jid import Jid2String
 
 from pykoclaw.config import settings as core_settings
@@ -324,16 +325,21 @@ class WhatsAppConnection:
         agent_db = self._get_agent_db(agent)
         agent_data_dir = self._get_agent_data_dir(agent)
 
-        result = await dispatch_to_agent(
-            prompt=prompt,
-            channel_prefix=f"wa-{agent.name.lower()}",
-            channel_id=chat_jid,
-            db=agent_db,
-            data_dir=agent_data_dir,
-            system_prompt=system_prompt,
-            extra_mcp_servers=self._extra_mcp_servers,
-            model=agent.model,
-        )
+        # Show "Writing..." indicator while the agent is thinking.
+        self._set_chat_presence(chat_jid, composing=True)
+        try:
+            result = await dispatch_to_agent(
+                prompt=prompt,
+                channel_prefix=f"wa-{agent.name.lower()}",
+                channel_id=chat_jid,
+                db=agent_db,
+                data_dir=agent_data_dir,
+                system_prompt=system_prompt,
+                extra_mcp_servers=self._extra_mcp_servers,
+                model=agent.model,
+            )
+        finally:
+            self._set_chat_presence(chat_jid, composing=False)
 
         extracted = _extract_reply(result.full_text)
         if extracted:
@@ -409,6 +415,27 @@ class WhatsAppConnection:
             except Exception:
                 mark_delivery_failed(db, delivery.id, "send failed")
                 log.exception("Failed to deliver to %s", chat_jid_str)
+
+    def _set_chat_presence(self, chat_jid: str, composing: bool) -> None:
+        """Send a typing indicator (composing/paused) to a WhatsApp chat.
+
+        This triggers the "Writing..." indicator in the recipient's app.
+        Errors are logged and swallowed — presence is best-effort.
+        """
+        if not self._client:
+            return
+        try:
+            jid = self._build_jid(chat_jid)
+            state = (
+                ChatPresence.CHAT_PRESENCE_COMPOSING
+                if composing
+                else ChatPresence.CHAT_PRESENCE_PAUSED
+            )
+            self._client.send_chat_presence(
+                jid, state, ChatPresenceMedia.CHAT_PRESENCE_MEDIA_TEXT
+            )
+        except Exception:
+            log.debug("Failed to send chat presence to %s", chat_jid)
 
     @staticmethod
     def _build_jid(chat_jid_str: str) -> Any:
