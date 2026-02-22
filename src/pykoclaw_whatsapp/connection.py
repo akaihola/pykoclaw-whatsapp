@@ -46,6 +46,7 @@ from .handler import (
 )
 from .queue import OutgoingQueue
 from .routing import AgentConfig, RoutingConfig, load_routing_config
+from .segments import ImageSegment, TextSegment, split_segments
 
 log = logging.getLogger(__name__)
 
@@ -401,7 +402,7 @@ class WhatsAppConnection:
             if is_multi_agent:
                 extracted = f"[{agent.name}]: {extracted}"
             jid = self._build_jid(chat_jid)
-            self._outgoing_queue.send(self._client, jid, extracted)
+            self._send_message(jid, extracted)
             log.info("Agent %s response sent to %s", agent.name, chat_jid)
         else:
             log.info("Agent %s chose silence for %s", agent.name, chat_jid)
@@ -460,7 +461,7 @@ class WhatsAppConnection:
                 message = markdown_to_whatsapp(delivery.message)
                 if is_multi and agent:
                     message = f"[{agent.name}]: {message}"
-                self._outgoing_queue.send(self._client, jid, message)
+                self._send_message(jid, message)
                 mark_delivered(db, delivery.id)
                 log.info(
                     "Delivered task result to %s (agent=%s)",
@@ -491,6 +492,42 @@ class WhatsAppConnection:
             )
         except Exception:
             log.debug("Failed to send chat presence to %s", chat_jid)
+
+    def _send_message(self, jid: Any, text: str) -> None:
+        """Send a formatted message to a WhatsApp chat.
+
+        The text is split into interleaved text and image segments so that
+        images appear in the conversation at the point where the agent
+        placed them — not all lumped together after the text.
+
+        Absolute paths to image files (PNG, JPEG, etc.) are read from disk
+        and sent as WhatsApp image messages.
+        """
+        if not self._client:
+            log.warning("Cannot send message — client not connected")
+            return
+        try:
+            segments = split_segments(text)
+            for seg in segments:
+                if isinstance(seg, TextSegment):
+                    self._outgoing_queue.send(self._client, jid, seg.text)
+                elif isinstance(seg, ImageSegment):
+                    path = Path(seg.ref.source)
+                    try:
+                        self._send_image(jid, path)
+                    except Exception:
+                        log.exception("Failed to send image: %s", path)
+        except Exception:
+            log.exception("Failed to send message to %s", jid)
+
+    def _send_image(
+        self, jid: Any, image_path: Path, caption: str | None = None
+    ) -> None:
+        """Send an image file via WhatsApp."""
+        data = image_path.read_bytes()
+        image_msg = self._client.build_image_message(data, caption=caption)
+        self._client.send_message(jid, message=image_msg)
+        log.info("Sent image %s to %s", image_path.name, jid)
 
     @staticmethod
     def _build_jid(chat_jid_str: str) -> Any:
