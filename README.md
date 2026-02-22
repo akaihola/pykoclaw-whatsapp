@@ -256,6 +256,33 @@ The agent has access to two WhatsApp-specific tools:
 
 These are available alongside the core pykoclaw tools (task scheduling, etc.).
 
+## Message formatting
+
+Agent replies are automatically converted from Markdown to WhatsApp-native
+markup before sending, so responses render correctly in the app rather than
+leaking raw Markdown syntax.
+
+| Markdown input            | WhatsApp output              |
+| ------------------------- | ---------------------------- |
+| `**bold**`                | `*bold*`                     |
+| `*italic*` / `_italic_`   | `_italic_`                   |
+| `~~strike~~`              | `~strike~`                   |
+| `` `code` ``              | `` `code` ``                 |
+| ` ```python ... ``` `     | ` ``` ... ``` ` (label stripped) |
+| `# Heading`               | `*HEADING*` + `▔` underline  |
+| `## Section`              | `*SECTION*` (all-caps bold)  |
+| `### Sub`                 | `*Sub*` (title-case bold)    |
+| `---`                     | `───────────────────────────` |
+| `- item` / `1. item`      | `- item` / `1. item`         |
+| Nested lists              | `  • sub-item`               |
+| `- [ ] task` / `- [x]`    | `⬜ task` / `✅ task`        |
+| `> quote`                 | `> quote`                    |
+| `[text](url)`             | `text (url)`                 |
+| Markdown table            | Unicode box table in ` ``` ` |
+| `![alt](img.png)`         | *(stripped)*                 |
+
+This conversion applies to both agent replies and scheduled task deliveries.
+
 ## Delivery queue
 
 When the pykoclaw scheduler runs a scheduled task, results are written to a
