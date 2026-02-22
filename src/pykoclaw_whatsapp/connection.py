@@ -206,7 +206,6 @@ class WhatsAppConnection:
         agent: AgentConfig,
         chat_jid: str,
         *,
-        hard_mention: bool,
         is_multi_agent: bool,
         other_agent_names: list[str] | None = None,
     ) -> str:
@@ -246,11 +245,9 @@ class WhatsAppConnection:
                 Only after a human participant sends a message should you consider
                 whether to speak. Never engage in agent-to-agent dialogue."""
             )
-        if hard_mention:
-            base += (
-                "\n\nThis batch contains a direct @mention of your name "
-                "— you MUST reply to it using `<reply>` tags."
-            )
+        # NOTE: hard_mention instruction goes in the user prompt, not here.
+        # system_prompt is baked into the session at creation and silently
+        # ignored on resume — see .memory/session-resume-system-prompt.md.
         return base
 
     async def _handle_agent_trigger(
@@ -312,15 +309,17 @@ class WhatsAppConnection:
         system_prompt = self._build_system_prompt(
             agent,
             chat_jid,
-            hard_mention=hard_mention,
             is_multi_agent=is_multi_agent,
             other_agent_names=other_names if is_multi_agent else None,
         )
 
-        prompt = (
-            f"New message batch from WhatsApp chat:\n\n{xml_context}\n\n"
-            f"Decide whether to reply, use tools silently, or do nothing."
-        )
+        prompt = f"New message batch from WhatsApp chat:\n\n{xml_context}\n\n"
+        if hard_mention:
+            prompt += (
+                "This batch contains a direct @mention of your name "
+                "— you MUST reply using `<reply>` tags.\n\n"
+            )
+        prompt += "Decide whether to reply, use tools silently, or do nothing."
 
         agent_db = self._get_agent_db(agent)
         agent_data_dir = self._get_agent_data_dir(agent)

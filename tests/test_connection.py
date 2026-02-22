@@ -195,7 +195,8 @@ async def test_hard_mention_system_prompt(
         await connection._handle_agent_trigger(chat_jid, hard_mention=True)
 
     call_kwargs = mock_dispatch.call_args.kwargs
-    assert "MUST reply" in call_kwargs["system_prompt"]
+    # "MUST reply" goes in user prompt (survives session resume), not system_prompt
+    assert "MUST reply" in call_kwargs["prompt"]
 
 
 @pytest.mark.asyncio
@@ -211,7 +212,7 @@ async def test_ambient_system_prompt(
 
     call_kwargs = mock_dispatch.call_args.kwargs
     assert "silence" in call_kwargs["system_prompt"].lower()
-    assert "MUST reply" not in call_kwargs["system_prompt"]
+    assert "MUST reply" not in call_kwargs["prompt"]
 
 
 @pytest.mark.asyncio
@@ -520,7 +521,7 @@ async def test_hard_mention_specific_agent(
     with patch(MOCK_TARGET, mock_dispatch):
         await multi_agent_connection._handle_agent_trigger(chat_jid, hard_mention=True)
 
-    # Tyko's system prompt should have "MUST reply", Ressu's should not
+    # Tyko's user prompt should have "MUST reply", Ressu's should not
     tyko_call = next(
         c
         for c in mock_dispatch.call_args_list
@@ -531,8 +532,8 @@ async def test_hard_mention_specific_agent(
         for c in mock_dispatch.call_args_list
         if c.kwargs["channel_prefix"] == "wa-ressu"
     )
-    assert "MUST reply" in tyko_call.kwargs["system_prompt"]
-    assert "MUST reply" not in ressu_call.kwargs["system_prompt"]
+    assert "MUST reply" in tyko_call.kwargs["prompt"]
+    assert "MUST reply" not in ressu_call.kwargs["prompt"]
 
 
 # --- Delivery polling across agent DBs ---
