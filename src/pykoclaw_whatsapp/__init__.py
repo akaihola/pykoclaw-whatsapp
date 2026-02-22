@@ -50,7 +50,12 @@ class WhatsAppPlugin(PykoClawPluginBase):
                 logging.INFO,
             )
             if log_level < logging.INFO:
-                for ns in ("pykoclaw", "pykoclaw_whatsapp", "pykoclaw_messaging"):
+                for ns in (
+                    "pykoclaw",
+                    "pykoclaw_whatsapp",
+                    "pykoclaw_messaging",
+                    "claude_agent_sdk",
+                ):
                     logging.getLogger(ns).setLevel(log_level)
             else:
                 logging.getLogger().setLevel(log_level)
