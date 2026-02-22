@@ -361,8 +361,26 @@ class WhatsAppConnection:
         except asyncio.CancelledError:
             log.info("Delivery polling stopped")
 
+    def _get_all_delivery_dbs(self) -> list[DbConnection]:
+        """Return all unique DBs that may contain pending deliveries.
+
+        Includes the bridge DB plus every per-agent DB (lazily opened).
+        """
+        seen_ids: set[int] = {id(self._db)}
+        dbs: list[DbConnection] = [self._db]
+        for agent_cfg in self._routing.agents.values():
+            db = self._get_agent_db(agent_cfg)
+            if id(db) not in seen_ids:
+                seen_ids.add(id(db))
+                dbs.append(db)
+        return dbs
+
     def _process_pending_deliveries(self) -> None:
-        pending = get_pending_deliveries(self._db, "wa")
+        for db in self._get_all_delivery_dbs():
+            self._process_deliveries_from_db(db)
+
+    def _process_deliveries_from_db(self, db: DbConnection) -> None:
+        pending = get_pending_deliveries(db, "wa")
         if not pending:
             return
 
@@ -383,14 +401,14 @@ class WhatsAppConnection:
                 if is_multi and agent:
                     message = f"[{agent.name}]: {message}"
                 self._outgoing_queue.send(self._client, jid, message)
-                mark_delivered(self._db, delivery.id)
+                mark_delivered(db, delivery.id)
                 log.info(
                     "Delivered task result to %s (agent=%s)",
                     chat_jid_str,
                     agent.name if agent else "unknown",
                 )
             except Exception:
-                mark_delivery_failed(self._db, delivery.id, "send failed")
+                mark_delivery_failed(db, delivery.id, "send failed")
                 log.exception("Failed to deliver to %s", chat_jid_str)
 
     @staticmethod

@@ -46,6 +46,17 @@ def db() -> sqlite3.Connection:
                 session_id TEXT,
                 cwd TEXT,
                 created_at TEXT NOT NULL
+            );
+            CREATE TABLE delivery_queue (
+                id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                task_run_log_id INTEGER,
+                conversation TEXT NOT NULL,
+                channel_prefix TEXT NOT NULL,
+                message TEXT NOT NULL,
+                status TEXT DEFAULT 'pending',
+                created_at TEXT NOT NULL,
+                delivered_at TEXT
             );""")
     )
     return db
@@ -522,3 +533,94 @@ async def test_hard_mention_specific_agent(
     )
     assert "MUST reply" in tyko_call.kwargs["system_prompt"]
     assert "MUST reply" not in ressu_call.kwargs["system_prompt"]
+
+
+# --- Delivery polling across agent DBs ---
+
+
+def _make_agent_db(tmp_path: Path, agent_name: str) -> sqlite3.Connection:
+    """Create a minimal agent DB with delivery_queue table."""
+    db_path = tmp_path / agent_name / "pykoclaw.db"
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    db = sqlite3.connect(str(db_path))
+    db.row_factory = sqlite3.Row
+    db.executescript(
+        dedent("""\
+            CREATE TABLE conversations (
+                name TEXT PRIMARY KEY,
+                session_id TEXT,
+                cwd TEXT,
+                created_at TEXT NOT NULL
+            );
+            CREATE TABLE delivery_queue (
+                id TEXT PRIMARY KEY,
+                task_id TEXT NOT NULL,
+                task_run_log_id INTEGER,
+                conversation TEXT NOT NULL,
+                channel_prefix TEXT NOT NULL,
+                message TEXT NOT NULL,
+                status TEXT DEFAULT 'pending',
+                created_at TEXT NOT NULL,
+                delivered_at TEXT
+            );""")
+    )
+    return db
+
+
+def test_delivery_polls_agent_dbs(
+    db: sqlite3.Connection, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Delivery polling finds pending items in per-agent DBs, not just bridge DB."""
+    from pykoclaw_whatsapp.config import WhatsAppSettings
+    from pykoclaw_whatsapp.routing import AgentConfig, RoutingConfig
+
+    monkeypatch.chdir(tmp_path)
+
+    ressu_dir = tmp_path / "ressu-data"
+    agent_db = _make_agent_db(tmp_path, "ressu-data")
+
+    routing = RoutingConfig(
+        default_agent="Ressu",
+        agents={
+            "Ressu": AgentConfig(name="Ressu", data_dir=ressu_dir),
+        },
+        routes={},
+    )
+
+    config = WhatsAppSettings(trigger_name="Ressu")
+    conn = WhatsAppConnection(db=db, config=config, routing=routing)
+    conn._client = Mock()
+
+    # Pre-populate the agent DB cache so it uses our test DB
+    conn._agent_dbs["Ressu"] = agent_db
+
+    # Enqueue a delivery in the agent's DB (as a per-agent scheduler would)
+    agent_db.execute(
+        dedent("""\
+            INSERT INTO delivery_queue
+                (id, task_id, conversation, channel_prefix, message, status, created_at)
+            VALUES (?, ?, ?, ?, ?, 'pending', '2024-01-01')"""),
+        ("d1", "t1", "wa-ressu-123@g.us", "wa", "Scheduled reminder"),
+    )
+    agent_db.commit()
+
+    # Verify nothing is in the bridge DB
+    bridge_pending = db.execute(
+        "SELECT * FROM delivery_queue WHERE status = 'pending'"
+    ).fetchall()
+    assert len(bridge_pending) == 0
+
+    # Run delivery processing
+    conn._outgoing_queue = Mock()
+    conn._process_pending_deliveries()
+
+    # The agent DB delivery should have been picked up and sent
+    conn._outgoing_queue.send.assert_called_once()
+    sent_text = conn._outgoing_queue.send.call_args[0][2]
+    assert "Scheduled reminder" in sent_text
+
+    # Verify it was marked as delivered in the agent DB (not bridge DB)
+    row = agent_db.execute(
+        "SELECT status FROM delivery_queue WHERE id = 'd1'"
+    ).fetchone()
+    assert row["status"] == "delivered"
