@@ -3,11 +3,12 @@ name = "pykoclaw-whatsapp"
 version = "0.1.0"
 description = "WhatsApp plugin for pykoclaw"
 requires-python = ">=3.12"
-dependencies = ["pykoclaw", "pykoclaw-messaging", "neonize>=0.3.14", "click", "qrcode", "markdown-it-py>=3.0.0", "mdit-py-plugins>=0.4.0"]
+dependencies = ["pykoclaw", "pykoclaw-messaging", "pykoclaw-vision", "neonize>=0.3.14", "click", "qrcode", "markdown-it-py>=3.0.0", "mdit-py-plugins>=0.4.0"]
 
 [tool.uv.sources]
 pykoclaw = { workspace = true }
 pykoclaw-messaging = { workspace = true }
+pykoclaw-vision = { workspace = true }
 
 [project.entry-points."pykoclaw.plugins"]
 whatsapp = "pykoclaw_whatsapp:WhatsAppPlugin"

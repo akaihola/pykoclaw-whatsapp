@@ -131,7 +131,7 @@ class WhatsAppPlugin(PykoClawPluginBase):
     def get_mcp_servers(self, db: DbConnection, conversation: str) -> dict[str, Any]:
         from claude_agent_sdk import create_sdk_mcp_server, tool
 
-        from .attachments import make_analyze_image_tool
+        from pykoclaw_vision import make_analyze_image_tool
         from .handler import format_xml_messages, get_new_messages_for_chat
 
         @tool(
