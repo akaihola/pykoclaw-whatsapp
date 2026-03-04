@@ -13,6 +13,7 @@ import re
 from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from html import escape as html_escape
+from pathlib import Path
 from textwrap import dedent
 from typing import TYPE_CHECKING
 
@@ -20,6 +21,8 @@ from neonize.events import MessageEv
 from neonize.utils.jid import Jid2String
 
 from pykoclaw.db import DbConnection
+
+from .attachments import download_and_store
 
 if TYPE_CHECKING:
     from neonize.client import NewClient
@@ -156,18 +159,32 @@ def extract_text(msg: MessageEv) -> str | None:
     return None
 
 
-def format_xml_message(sender: str, timestamp: str, content: str) -> str:
-    """Format a single message as XML (NanoClaw index.ts:204-209)."""
+def format_xml_message(
+    sender: str,
+    timestamp: str,
+    content: str | None,
+    attachment_path: str | None = None,
+) -> str:
+    """Format a single message as XML (NanoClaw index.ts:204-209).
+
+    When *attachment_path* is set an ``<attachment>`` element is appended so
+    the agent knows to call ``analyze_image`` with that path.
+    """
+    body = html_escape(content or "")
+    if attachment_path:
+        body += f'<attachment type="image" path="{html_escape(attachment_path)}" />'
     return (
         f'<message sender="{html_escape(sender)}"'
         f' time="{html_escape(timestamp)}">'
-        f"{html_escape(content)}</message>"
+        f"{body}</message>"
     )
 
 
-def format_xml_messages(messages: list[tuple[str, str, str]]) -> str:
+def format_xml_messages(
+    messages: list[tuple[str, str, str | None, str | None]],
+) -> str:
     """Format multiple messages as XML block for agent prompt."""
-    lines = [format_xml_message(s, t, c) for s, t, c in messages]
+    lines = [format_xml_message(s, t, c, a) for s, t, c, a in messages]
     return f"<messages>\n{'\n'.join(lines)}\n</messages>"
 
 
@@ -175,7 +192,7 @@ def store_message(
     db: DbConnection,
     chat_jid: str,
     sender: str,
-    text: str,
+    text: str | None,
     timestamp: str,
     is_from_me: bool,
 ) -> None:
@@ -184,6 +201,24 @@ def store_message(
             INSERT INTO wa_messages (chat_jid, sender, text, timestamp, is_from_me)
             VALUES (?, ?, ?, ?, ?)"""),
         (chat_jid, sender, text, timestamp, 1 if is_from_me else 0),
+    )
+    db.commit()
+
+
+def store_attachment(
+    db: DbConnection,
+    *,
+    chat_jid: str,
+    message_timestamp: str,
+    file_path: str,
+    mime_type: str,
+) -> None:
+    """Record a downloaded attachment in ``wa_attachments``."""
+    db.execute(
+        dedent("""\
+            INSERT INTO wa_attachments (chat_jid, message_timestamp, file_path, mime_type)
+            VALUES (?, ?, ?, ?)"""),
+        (chat_jid, message_timestamp, file_path, mime_type),
     )
     db.commit()
 
@@ -226,10 +261,12 @@ def update_agent_cursor(db: DbConnection, chat_jid: str, timestamp: str) -> None
 
 def get_new_messages_for_chat(
     db: DbConnection, chat_jid: str
-) -> list[tuple[str, str, str]]:
+) -> list[tuple[str, str, str | None, str | None]]:
     """Get messages newer than last agent timestamp for a chat.
 
-    Returns list of (sender, timestamp, text) tuples.
+    Returns list of ``(sender, timestamp, text, attachment_path)`` tuples.
+    ``text`` and ``attachment_path`` may each be ``None`` (image-only messages
+    have no text; text-only messages have no attachment).
     """
     row = db.execute(
         "SELECT last_agent_timestamp FROM wa_chats WHERE jid = ?", (chat_jid,)
@@ -238,12 +275,15 @@ def get_new_messages_for_chat(
 
     rows = db.execute(
         dedent("""\
-            SELECT sender, timestamp, text FROM wa_messages
-            WHERE chat_jid = ? AND timestamp > ?
-            ORDER BY timestamp"""),
+            SELECT m.sender, m.timestamp, m.text, a.file_path
+            FROM wa_messages m
+            LEFT JOIN wa_attachments a
+                ON a.chat_jid = m.chat_jid AND a.message_timestamp = m.timestamp
+            WHERE m.chat_jid = ? AND m.timestamp > ?
+            ORDER BY m.timestamp"""),
         (chat_jid, since),
     ).fetchall()
-    return [(r["sender"], r["timestamp"], r["text"]) for r in rows]
+    return [(r["sender"], r["timestamp"], r["text"], r["file_path"]) for r in rows]
 
 
 class MessageHandler:
@@ -261,6 +301,7 @@ class MessageHandler:
         trigger_names: list[str],
         loop: asyncio.AbstractEventLoop,
         batch_accumulator: BatchAccumulator,
+        data_dir: Path,
         agent_callback: object | None = None,
     ) -> None:
         self._db = db
@@ -268,6 +309,7 @@ class MessageHandler:
         self._trigger_names = trigger_names
         self._loop = loop
         self._batch_accumulator = batch_accumulator
+        self._data_dir = data_dir
         self._agent_callback = agent_callback
         self._self_jid: str | None = None
 
@@ -290,7 +332,18 @@ class MessageHandler:
             sender = info.Pushname or Jid2String(source.Sender)
 
             text = extract_text(event)
-            if not text:
+
+            # Try to download an image attachment (images may also carry a caption
+            # as text, so we handle both together).
+            attachment_result = download_and_store(
+                client,
+                event,
+                chat_jid=chat_jid,
+                data_dir=self._data_dir,
+            )
+
+            # Skip messages that carry neither text nor a downloadable image.
+            if not text and attachment_result is None:
                 return
 
             store_message(
@@ -301,6 +354,18 @@ class MessageHandler:
                 timestamp=timestamp,
                 is_from_me=is_from_me,
             )
+
+            if attachment_result is not None:
+                mime_type, file_path = attachment_result
+                store_attachment(
+                    self._db,
+                    chat_jid=chat_jid,
+                    message_timestamp=timestamp,
+                    file_path=str(file_path),
+                    mime_type=mime_type,
+                )
+                log.info("Image saved for %s from %r: %s", chat_jid, sender, file_path)
+
             update_chat_timestamp(self._db, chat_jid, timestamp)
             update_global_cursor(self._db, timestamp)
 
@@ -313,14 +378,15 @@ class MessageHandler:
                 and not source.IsGroup
             )
 
-            is_hard_mention = bool(find_hard_mentions(text, self._trigger_names))
+            is_hard_mention = bool(find_hard_mentions(text or "", self._trigger_names))
 
             log.debug(
-                "Received in %s from %r: hard_mention=%s, text=%r",
+                "Received in %s from %r: hard_mention=%s, has_image=%s, text=%r",
                 chat_jid,
                 sender,
                 is_hard_mention,
-                text[:120],
+                attachment_result is not None,
+                (text or "")[:120],
             )
 
             if is_self_chat or is_hard_mention:

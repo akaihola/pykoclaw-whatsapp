@@ -115,6 +115,14 @@ class WhatsAppPlugin(PykoClawPluginBase):
                     key TEXT PRIMARY KEY,
                     value TEXT
                 )"""),
+            dedent("""\
+                CREATE TABLE IF NOT EXISTS wa_attachments (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    chat_jid TEXT NOT NULL,
+                    message_timestamp TEXT NOT NULL,
+                    file_path TEXT NOT NULL,
+                    mime_type TEXT NOT NULL
+                )"""),
         ]
 
     def get_config_class(self) -> type[BaseSettings] | None:
@@ -123,6 +131,7 @@ class WhatsAppPlugin(PykoClawPluginBase):
     def get_mcp_servers(self, db: DbConnection, conversation: str) -> dict[str, Any]:
         from claude_agent_sdk import create_sdk_mcp_server, tool
 
+        from .attachments import make_analyze_image_tool
         from .handler import format_xml_messages, get_new_messages_for_chat
 
         @tool(
@@ -165,9 +174,11 @@ class WhatsAppPlugin(PykoClawPluginBase):
             xml = format_xml_messages(messages)
             return {"content": [{"type": "text", "text": xml}]}
 
+        analyze_image = make_analyze_image_tool()
+
         return {
             "whatsapp": create_sdk_mcp_server(
                 name="whatsapp",
-                tools=[send_message, get_chat_history],
+                tools=[send_message, get_chat_history, analyze_image],
             )
         }

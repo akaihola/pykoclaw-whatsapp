@@ -50,7 +50,7 @@ def test_get_db_migrations_returns_valid_sql() -> None:
     plugin = WhatsAppPlugin()
     migrations = plugin.get_db_migrations()
 
-    assert len(migrations) == 3
+    assert len(migrations) == 4
     assert "CREATE TABLE IF NOT EXISTS wa_messages" in migrations[0]
     assert "CREATE TABLE IF NOT EXISTS wa_chats" in migrations[1]
     assert "CREATE TABLE IF NOT EXISTS wa_config" in migrations[2]

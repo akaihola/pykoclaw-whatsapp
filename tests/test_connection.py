@@ -57,6 +57,13 @@ def db() -> sqlite3.Connection:
                 status TEXT DEFAULT 'pending',
                 created_at TEXT NOT NULL,
                 delivered_at TEXT
+            );
+            CREATE TABLE wa_attachments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_jid TEXT NOT NULL,
+                message_timestamp TEXT NOT NULL,
+                file_path TEXT NOT NULL,
+                mime_type TEXT NOT NULL
             );""")
     )
     return db
@@ -211,7 +218,8 @@ async def test_ambient_system_prompt(
         await connection._handle_agent_trigger(chat_jid, hard_mention=False)
 
     call_kwargs = mock_dispatch.call_args.kwargs
-    assert "silence" in call_kwargs["system_prompt"].lower()
+    assert "silent" in call_kwargs["system_prompt"].lower()
+    assert "analyze_image" in call_kwargs["system_prompt"]
     assert "MUST reply" not in call_kwargs["prompt"]
 
 

@@ -143,6 +143,7 @@ class WhatsAppConnection:
             trigger_names=self._routing.all_trigger_names,
             loop=self._loop,
             batch_accumulator=self._batch_accumulator,
+            data_dir=core_settings.data,
             agent_callback=self._handle_agent_trigger,
         )
 
@@ -233,7 +234,12 @@ class WhatsAppConnection:
             People may refer to you by name in various forms — your full name, \
             shortened, with or without @, with punctuation, or even inflected/declined \
             forms in non-English languages. When someone addresses you by any variation \
-            of your name, treat it as a direct address and reply."""
+            of your name, treat it as a direct address and reply.
+
+            When a message contains an <attachment type="image" path="..." /> element, \
+            use the analyze_image tool with that path to examine the image before replying. \
+            Image-only messages (no caption text) are valid — call analyze_image even \
+            when there is no accompanying text."""
         )
         if is_multi_agent and other_agent_names:
             others = ", ".join(other_agent_names)
@@ -265,7 +271,7 @@ class WhatsAppConnection:
             return
 
         # Determine which agents are specifically hard-mentioned in the batch
-        all_text = " ".join(text for _, _, text in messages)
+        all_text = " ".join(text for _, _, text, _ in messages if text)
         mentioned_agents = find_hard_mentions(all_text, self._routing.all_trigger_names)
 
         log.debug(

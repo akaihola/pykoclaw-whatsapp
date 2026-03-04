@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
+from pathlib import Path
 from textwrap import dedent
 from unittest.mock import AsyncMock, Mock
 
@@ -18,6 +19,7 @@ from pykoclaw_whatsapp.handler import (
     format_xml_message,
     format_xml_messages,
     get_new_messages_for_chat,
+    store_attachment,
     store_message,
     update_agent_cursor,
     update_chat_timestamp,
@@ -50,6 +52,13 @@ def db() -> sqlite3.Connection:
             CREATE TABLE wa_config (
                 key TEXT PRIMARY KEY,
                 value TEXT
+            );
+            CREATE TABLE wa_attachments (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                chat_jid TEXT NOT NULL,
+                message_timestamp TEXT NOT NULL,
+                file_path TEXT NOT NULL,
+                mime_type TEXT NOT NULL
             );""")
     )
     return db
@@ -63,6 +72,24 @@ def test_format_xml_message() -> None:
     assert ">Hello world</message>" in result
 
 
+def test_format_xml_message_with_attachment() -> None:
+    """Image attachment produces an <attachment> element."""
+    result = format_xml_message(
+        "Alice", "2024-01-01T12:00:00Z", None, "/data/wa_attachments/chat/msg.jpg"
+    )
+    assert '<attachment type="image"' in result
+    assert 'path="/data/wa_attachments/chat/msg.jpg"' in result
+
+
+def test_format_xml_message_text_and_attachment() -> None:
+    """Caption text and attachment are both rendered."""
+    result = format_xml_message(
+        "Alice", "2024-01-01T12:00:00Z", "Look at this!", "/data/img.png"
+    )
+    assert "Look at this!" in result
+    assert '<attachment type="image"' in result
+
+
 def test_format_xml_message_escapes_html() -> None:
     """Test that XML formatting escapes HTML entities."""
     result = format_xml_message("Bob", "2024-01-01", "<script>alert('xss')</script>")
@@ -73,9 +100,9 @@ def test_format_xml_message_escapes_html() -> None:
 
 def test_format_xml_messages() -> None:
     """Test formatting multiple messages as XML block."""
-    messages = [
-        ("Alice", "2024-01-01T12:00:00Z", "Hello"),
-        ("Bob", "2024-01-01T12:01:00Z", "Hi there"),
+    messages: list[tuple[str, str, str | None, str | None]] = [
+        ("Alice", "2024-01-01T12:00:00Z", "Hello", None),
+        ("Bob", "2024-01-01T12:01:00Z", "Hi there", None),
     ]
     result = format_xml_messages(messages)
 
@@ -85,6 +112,16 @@ def test_format_xml_messages() -> None:
     assert "Bob" in result
     assert "Hello" in result
     assert "Hi there" in result
+
+
+def test_format_xml_messages_with_attachment() -> None:
+    """Messages with attachment paths render <attachment> elements."""
+    messages: list[tuple[str, str, str | None, str | None]] = [
+        ("Alice", "2024-01-01T12:00:00Z", None, "/data/img.jpg"),
+    ]
+    result = format_xml_messages(messages)
+    assert '<attachment type="image"' in result
+    assert "/data/img.jpg" in result
 
 
 def test_store_message(db: sqlite3.Connection) -> None:
@@ -160,6 +197,52 @@ def test_get_new_messages_for_chat(db: sqlite3.Connection) -> None:
     assert messages[1][2] == "Message 3"
 
 
+def test_store_attachment(db: sqlite3.Connection) -> None:
+    """Test that store_attachment inserts a row into wa_attachments."""
+    store_attachment(
+        db,
+        chat_jid="123@s.whatsapp.net",
+        message_timestamp="2024-01-01T12:05:00Z",
+        file_path="/data/wa_attachments/123@s.whatsapp.net/abc.jpg",
+        mime_type="image/jpeg",
+    )
+    row = db.execute("SELECT * FROM wa_attachments").fetchone()
+    assert row["chat_jid"] == "123@s.whatsapp.net"
+    assert row["message_timestamp"] == "2024-01-01T12:05:00Z"
+    assert row["file_path"] == "/data/wa_attachments/123@s.whatsapp.net/abc.jpg"
+    assert row["mime_type"] == "image/jpeg"
+
+
+def test_get_new_messages_includes_attachment(db: sqlite3.Connection) -> None:
+    """Messages with attachments return a 4-tuple with the file path."""
+    store_message(db, "chat@g.us", "Alice", None, "2024-01-01T12:00:00Z", False)
+    store_attachment(
+        db,
+        chat_jid="chat@g.us",
+        message_timestamp="2024-01-01T12:00:00Z",
+        file_path="/data/img.jpg",
+        mime_type="image/jpeg",
+    )
+
+    messages = get_new_messages_for_chat(db, "chat@g.us")
+    assert len(messages) == 1
+    sender, ts, text, attachment = messages[0]
+    assert sender == "Alice"
+    assert text is None
+    assert attachment == "/data/img.jpg"
+
+
+def test_get_new_messages_text_only_has_no_attachment(db: sqlite3.Connection) -> None:
+    """Text-only messages return None as the attachment_path."""
+    store_message(db, "chat@g.us", "Bob", "Hello", "2024-01-01T12:01:00Z", False)
+
+    messages = get_new_messages_for_chat(db, "chat@g.us")
+    assert len(messages) == 1
+    _, _, text, attachment = messages[0]
+    assert text == "Hello"
+    assert attachment is None
+
+
 def test_extract_text_from_conversation() -> None:
     """Test extracting text from conversation message."""
     mock_msg = Mock()
@@ -194,8 +277,9 @@ def _make_handler(
     trigger_name: str = "Andy",
     trigger_names: list[str] | None = None,
     self_jid: str | None = None,
+    tmp_path: Path | None = None,
 ) -> tuple[MessageHandler, Mock]:
-    from neonize.utils.jid import Jid2String
+    from pathlib import Path as _Path
 
     loop = Mock(spec=asyncio.AbstractEventLoop)
     loop.call_later = Mock(return_value=Mock())
@@ -204,15 +288,13 @@ def _make_handler(
     batch_acc.add = Mock()
     batch_acc.flush_now = AsyncMock()
 
-    future = Mock()
-    loop_run = Mock(return_value=future)
-
     handler = MessageHandler(
         db=db,
         outgoing_queue=Mock(),
         trigger_names=trigger_names or [trigger_name],
         loop=loop,
         batch_accumulator=batch_acc,
+        data_dir=tmp_path or _Path("/tmp/pykoclaw-test"),
     )
     if self_jid:
         handler.set_self_jid(self_jid)
