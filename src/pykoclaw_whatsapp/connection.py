@@ -358,6 +358,7 @@ class WhatsAppConnection:
                 system_prompt=system_prompt,
                 extra_mcp_servers=self._extra_mcp_servers,
                 model=agent.model,
+                include_partial_messages=False,
             )
         finally:
             self._set_chat_presence(chat_jid, composing=False)
@@ -383,6 +384,7 @@ class WhatsAppConnection:
                     extra_mcp_servers=self._extra_mcp_servers,
                     model=agent.model,
                     fresh=True,
+                    include_partial_messages=False,
                 )
             finally:
                 self._set_chat_presence(chat_jid, composing=False)
