@@ -287,6 +287,48 @@ leaking raw Markdown syntax.
 
 This conversion applies to both agent replies and scheduled task deliveries.
 
+## Image support (inbound vision)
+
+When a user sends an image (JPEG, PNG, GIF, WebP) or sticker, the plugin:
+
+1. **Downloads** the media via `client.download_any()` immediately on receipt
+   (WhatsApp CDN URLs expire).
+2. **Stores** it at `{data_dir}/wa_attachments/{chat_jid}/{msg_id}.{ext}` and
+   records the path in the `wa_attachments` table.
+3. **Includes** an `<attachment type="image" path="..." />` element in the XML
+   message context delivered to the agent.
+4. The agent calls the **`analyze_image` MCP tool** with that path and a
+   question, which calls the Gemini vision API and returns a text description.
+
+### Vision model
+
+The `analyze_image` tool uses `gemini-3.1-flash-lite-preview` by default.
+Override with the `PYKOCLAW_WA_VISION_MODEL` environment variable:
+
+```bash
+export PYKOCLAW_WA_VISION_MODEL=gemini-3.1-pro-preview
+```
+
+The tool reads `GEMINI_API_KEY` from the environment.
+Images with captions send both the caption text and the `<attachment>` element.
+Image-only messages (no caption) are valid triggers — the agent is instructed to
+call `analyze_image` even without accompanying text.
+
+### Supported formats
+
+| Type    | Download | Analyze |
+| ------- | -------- | ------- |
+| JPEG    | ✅       | ✅      |
+| PNG     | ✅       | ✅      |
+| GIF     | ✅       | ✅      |
+| WebP    | ✅       | ✅      |
+| Sticker | ✅       | ✅      |
+| Video   | –        | –       |
+| Audio   | –        | –       |
+| Doc     | –        | –       |
+
+Video, audio, and document support are deferred to future phases.
+
 ## Delivery queue
 
 When the pykoclaw scheduler runs a scheduled task, results are written to a
@@ -307,14 +349,19 @@ pykoclaw whatsapp run
        │    ├── DisconnectedEv → buffer outgoing messages
        │    └── MessageEv      → MessageHandler.on_message()
        │         ├── extract text (plain, extended, captions)
+       │         ├── detect imageMessage/stickerMessage
+       │         │    └── download_and_store() → wa_attachments/{chat}/{id}.ext
        │         ├── store in wa_messages (bridge DB)
+       │         ├── store in wa_attachments if image present
        │         ├── check hard mentions (all agent names)
        │         └── BatchAccumulator (per-chat timer)
        │              └── _handle_agent_trigger()
        │                   ├── look up agents for chat JID
+       │                   ├── format XML with <attachment> elements
        │                   ├── for each agent (sequential):
        │                   │    ├── build system prompt (multi-agent aware)
        │                   │    ├── dispatch_to_agent() (agent's DB + data_dir)
+       │                   │    │    MCP tools: analyze_image (Gemini vision)
        │                   │    ├── extract <reply> tags
        │                   │    └── prefix + send via OutgoingQueue
        │                   └── advance per-chat cursor
