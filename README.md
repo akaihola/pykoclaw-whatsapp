@@ -411,6 +411,10 @@ Let me know if you need a different time range.
 This sends two text messages (before and after the path) and one image
 message, in that order.
 
+The agent's system prompt informs it of this capability and instructs it
+to prefer direct attachment over the `httpd` skill when the goal is simply
+to share an image with the chat.
+
 ## Supported message types
 
 Text is extracted from:

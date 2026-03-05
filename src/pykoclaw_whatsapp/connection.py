@@ -240,7 +240,12 @@ class WhatsAppConnection:
             When a message contains an <attachment type="image" path="..." /> element, \
             use the analyze_image tool with that path to examine the image before replying. \
             Image-only messages (no caption text) are valid — call analyze_image even \
-            when there is no accompanying text."""
+            when there is no accompanying text.
+
+            To send an image directly as a WhatsApp attachment, place its absolute \
+            file path on its own line inside <reply> tags — the bridge reads the file \
+            and delivers it as an image message automatically. Prefer this over the \
+            httpd skill when the goal is simply to share an image with the chat."""
         )
         if is_multi_agent and other_agent_names:
             others = ", ".join(other_agent_names)

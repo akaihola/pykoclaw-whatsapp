@@ -220,6 +220,9 @@ async def test_ambient_system_prompt(
     call_kwargs = mock_dispatch.call_args.kwargs
     assert "silent" in call_kwargs["system_prompt"].lower()
     assert "analyze_image" in call_kwargs["system_prompt"]
+    assert (
+        "absolute" in call_kwargs["system_prompt"].lower()
+    )  # outbound image instruction
     assert "MUST reply" not in call_kwargs["prompt"]
 
 
