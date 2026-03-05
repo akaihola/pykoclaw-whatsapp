@@ -544,6 +544,96 @@ async def test_hard_mention_specific_agent(
     assert "MUST reply" not in ressu_call.kwargs["prompt"]
 
 
+# --- Outbound image tests ---
+
+
+@pytest.mark.asyncio
+async def test_image_path_in_reply_sends_image(
+    db: sqlite3.Connection,
+    connection: WhatsAppConnection,
+    tmp_path: Path,
+) -> None:
+    """Agent reply containing an image path sends it as a WhatsApp image message."""
+    chat_jid = "123@s.whatsapp.net"
+    _seed_messages(db, chat_jid)
+
+    img = tmp_path / "chart.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
+
+    mock_dispatch = AsyncMock(
+        return_value=_make_result(f"<reply>Here is the chart:\n{img}\nEnjoy!</reply>")
+    )
+    mock_image_msg = Mock()
+    connection._client.build_image_message = Mock(return_value=mock_image_msg)
+    connection._client.send_message = Mock()
+
+    with patch(MOCK_TARGET, mock_dispatch):
+        connection._outgoing_queue = Mock()
+        await connection._handle_agent_trigger(chat_jid)
+
+    # Image sent via Neonize
+    connection._client.send_message.assert_called_once_with(
+        connection._build_jid(chat_jid), message=mock_image_msg
+    )
+    # Text segments still sent via outgoing queue
+    assert connection._outgoing_queue.send.call_count >= 1
+
+
+@pytest.mark.asyncio
+async def test_image_only_reply(
+    db: sqlite3.Connection,
+    connection: WhatsAppConnection,
+    tmp_path: Path,
+) -> None:
+    """Agent reply that is only an image path sends the image, no text."""
+    chat_jid = "123@s.whatsapp.net"
+    _seed_messages(db, chat_jid)
+
+    img = tmp_path / "graph.png"
+    img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 8)
+
+    mock_dispatch = AsyncMock(return_value=_make_result(f"<reply>{img}</reply>"))
+    mock_image_msg = Mock()
+    connection._client.build_image_message = Mock(return_value=mock_image_msg)
+    connection._client.send_message = Mock()
+
+    with patch(MOCK_TARGET, mock_dispatch):
+        connection._outgoing_queue = Mock()
+        await connection._handle_agent_trigger(chat_jid)
+
+    connection._client.send_message.assert_called_once()
+    connection._outgoing_queue.send.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_nonexistent_image_path_sent_as_text(
+    db: sqlite3.Connection,
+    connection: WhatsAppConnection,
+) -> None:
+    """A path to a file that doesn't exist is left in the text, not sent as image."""
+    chat_jid = "123@s.whatsapp.net"
+    _seed_messages(db, chat_jid)
+
+    mock_dispatch = AsyncMock(
+        return_value=_make_result(
+            "<reply>See /tmp/nonexistent_xyz12345.png for details</reply>"
+        )
+    )
+    connection._client.build_image_message = Mock()
+    connection._client.send_message = Mock()
+
+    with patch(MOCK_TARGET, mock_dispatch):
+        connection._outgoing_queue = Mock()
+        await connection._handle_agent_trigger(chat_jid)
+
+    # No image sent — file doesn't exist
+    connection._client.send_message.assert_not_called()
+    # Text (including the path string) is sent normally
+    connection._outgoing_queue.send.assert_called_once()
+    sent_text = connection._outgoing_queue.send.call_args[0][2]
+    assert "nonexistent_xyz12345.png" in sent_text
+
+
 # --- Delivery polling across agent DBs ---
 
 

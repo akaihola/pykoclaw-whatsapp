@@ -1,7 +1,7 @@
 """Detect and collect image file references in agent responses.
 
 Scans text for file paths ending in common image extensions, checks that
-the files exist on disk, and returns them for upload to Matrix.
+the files exist on disk, and returns them for sending via WhatsApp.
 """
 
 from __future__ import annotations

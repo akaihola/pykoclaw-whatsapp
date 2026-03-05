@@ -387,6 +387,30 @@ Per-agent DBs are only accessed from the asyncio event loop thread.
 - `client.me` is not a JID — use `client.me.JID` to get the JID object that
   `Jid2String()` expects.
 
+## Outbound image support
+
+Agents can send image attachments by including an absolute file path in their
+`<reply>` text.  Any path ending in a recognised image extension (`.png`,
+`.jpg`, `.jpeg`, `.gif`, `.webp`, `.bmp`, `.tiff`) that exists on disk is
+automatically read and sent as a WhatsApp image message.
+
+Images and text are delivered in document order — if the agent puts a path
+between two paragraphs of text, the image appears between them in the chat.
+Paths to files that do not exist are left as plain text.
+
+Example agent reply:
+
+```
+<reply>
+Here is the chart I generated for you:
+/tmp/pykoclaw/chart-2026-03.png
+Let me know if you need a different time range.
+</reply>
+```
+
+This sends two text messages (before and after the path) and one image
+message, in that order.
+
 ## Supported message types
 
 Text is extracted from:
