@@ -15,9 +15,12 @@ import logging
 import re
 import signal
 import threading
+import urllib.request
+from collections.abc import Callable
 from pathlib import Path
 from textwrap import dedent
 from typing import Any
+from urllib.parse import urlparse
 
 from neonize.client import NewClient
 from neonize.events import ConnectedEv, DisconnectedEv, MessageEv, QREv
@@ -44,6 +47,7 @@ from .handler import (
     get_new_messages_for_chat,
     update_agent_cursor,
 )
+from .images import mime_for_path, mime_for_url
 from .queue import OutgoingQueue
 from .routing import AgentConfig, RoutingConfig, load_routing_config
 from .segments import ImageSegment, TextSegment, split_segments
@@ -88,10 +92,12 @@ class WhatsAppConnection:
         config: WhatsAppSettings | None = None,
         extra_mcp_servers: dict[str, Any] | None = None,
         routing: RoutingConfig | None = None,
+        response_transformer: Callable[[str], str] | None = None,
     ) -> None:
         self._config = config or get_config()
         self._db = db
         self._extra_mcp_servers = extra_mcp_servers or {}
+        self._response_transformer = response_transformer
         self._outgoing_queue = OutgoingQueue()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._client: NewClient | None = None
@@ -127,7 +133,7 @@ class WhatsAppConnection:
         """Block the main thread on neonize ``connect()`` until Ctrl-C.
 
         ``connect()`` is a blocking ctypes→Go call that only unblocks when
-        ``client.stop()`` cancels the Go context.  The asyncio loop runs on
+        ``client.stop()`` cancels the Go context. The asyncio loop runs on
         a daemon thread so ``run_coroutine_threadsafe`` agent callbacks work.
         """
         self._loop = asyncio.new_event_loop()
@@ -318,7 +324,7 @@ class WhatsAppConnection:
         *,
         chat_jid: str,
         agent: AgentConfig,
-        messages: list[tuple[str, str, str]],
+        messages: list[tuple[str, str, str | None, str | None]],
         is_multi_agent: bool,
         hard_mention: bool,
     ) -> None:
@@ -365,12 +371,13 @@ class WhatsAppConnection:
                 extra_mcp_servers=self._extra_mcp_servers,
                 model=agent.model,
                 include_partial_messages=False,
+                response_transformer=self._response_transformer,
             )
         finally:
             self._set_chat_presence(chat_jid, composing=False)
 
         # When hard-mentioned, an empty result means the Claude subprocess exited
-        # before processing the request (exit code 0, no text written).  Retry
+        # before processing the request (exit code 0, no text written). Retry
         # once with a guaranteed-fresh session so the user gets a response.
         if hard_mention and not result.full_text:
             log.warning(
@@ -391,6 +398,7 @@ class WhatsAppConnection:
                     model=agent.model,
                     fresh=True,
                     include_partial_messages=False,
+                    response_transformer=self._response_transformer,
                 )
             finally:
                 self._set_chat_presence(chat_jid, composing=False)
@@ -403,7 +411,6 @@ class WhatsAppConnection:
         )
         extracted = _extract_reply(result.full_text)
         if extracted:
-            extracted = markdown_to_whatsapp(extracted)
             if is_multi_agent:
                 extracted = f"[{agent.name}]: {extracted}"
             jid = self._build_jid(chat_jid)
@@ -463,7 +470,7 @@ class WhatsAppConnection:
 
             try:
                 jid = self._build_jid(chat_jid_str)
-                message = markdown_to_whatsapp(delivery.message)
+                message = delivery.message
                 if is_multi and agent:
                     message = f"[{agent.name}]: {message}"
                 self._send_message(jid, message)
@@ -505,8 +512,8 @@ class WhatsAppConnection:
         images appear in the conversation at the point where the agent
         placed them — not all lumped together after the text.
 
-        Absolute paths to image files (PNG, JPEG, etc.) are read from disk
-        and sent as WhatsApp image messages.
+        Local image paths and Markdown HTTP image URLs are sent as image
+        messages. Remaining text segments are converted to WhatsApp markup.
         """
         if not self._client:
             log.warning("Cannot send message — client not connected")
@@ -515,13 +522,19 @@ class WhatsAppConnection:
             segments = split_segments(text)
             for seg in segments:
                 if isinstance(seg, TextSegment):
-                    self._outgoing_queue.send(self._client, jid, seg.text)
+                    self._outgoing_queue.send(
+                        self._client, jid, markdown_to_whatsapp(seg.text)
+                    )
                 elif isinstance(seg, ImageSegment):
-                    path = Path(seg.ref.source)
+                    ref = seg.ref
                     try:
-                        self._send_image(jid, path)
+                        if ref.kind == "file":
+                            path = Path(ref.source)
+                            self._send_image(jid, path)
+                        elif ref.kind == "url":
+                            self._send_image_url(jid, ref.source)
                     except Exception:
-                        log.exception("Failed to send image: %s", path)
+                        log.exception("Failed to send image: %s", ref.source)
         except Exception:
             log.exception("Failed to send message to %s", jid)
 
@@ -530,9 +543,51 @@ class WhatsAppConnection:
     ) -> None:
         """Send an image file via WhatsApp."""
         data = image_path.read_bytes()
-        image_msg = self._client.build_image_message(data, caption=caption)
-        self._client.send_message(jid, message=image_msg)
-        log.info("Sent image %s to %s", image_path.name, jid)
+        self._send_image_bytes(
+            jid,
+            data,
+            caption=caption,
+            image_name=image_path.name,
+            mime_type=mime_for_path(image_path),
+        )
+
+    def _send_image_bytes(
+        self,
+        jid: Any,
+        data: bytes,
+        *,
+        caption: str | None = None,
+        image_name: str,
+        mime_type: str,
+    ) -> None:
+        """Send image bytes via WhatsApp."""
+        client = self._client
+        if client is None:
+            log.warning("Cannot send image — client not connected")
+            return
+        image_msg = client.build_image_message(data, caption=caption)
+        client.send_message(jid, message=image_msg)
+        log.info(
+            "Sent image %s to %s (%s, %d bytes)", image_name, jid, mime_type, len(data)
+        )
+
+    def _send_image_url(self, jid: Any, url: str, caption: str | None = None) -> None:
+        """Download and send a remote image via WhatsApp."""
+        try:
+            with urllib.request.urlopen(url, timeout=10) as response:
+                data = response.read()
+        except Exception:
+            log.exception("Failed to download image URL: %s", url)
+            return
+
+        image_name = Path(urlparse(url).path).name or "image"
+        self._send_image_bytes(
+            jid,
+            data,
+            caption=caption,
+            image_name=image_name,
+            mime_type=mime_for_url(url),
+        )
 
     @staticmethod
     def _build_jid(chat_jid_str: str) -> Any:

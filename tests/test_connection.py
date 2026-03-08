@@ -104,6 +104,13 @@ def _make_result(text: str = "", session_id: str = "ses_new") -> DispatchResult:
     return DispatchResult(full_text=text, session_id=session_id)
 
 
+def _mock_neonize_client() -> Mock:
+    client = Mock()
+    client.build_image_message = Mock(return_value=Mock())
+    client.send_message = Mock()
+    return client
+
+
 @pytest.mark.asyncio
 async def test_session_resumption(
     db: sqlite3.Connection, connection: WhatsAppConnection
@@ -350,6 +357,7 @@ async def test_extract_reply_unit() -> None:
     assert _extract_reply("<reply>   \n  </reply>") is None
 
     result = _extract_reply("<reply>Line 1\nLine 2</reply>")
+    assert result is not None
     assert "Line 1" in result
     assert "Line 2" in result
 
@@ -567,15 +575,16 @@ async def test_image_path_in_reply_sends_image(
         return_value=_make_result(f"<reply>Here is the chart:\n{img}\nEnjoy!</reply>")
     )
     mock_image_msg = Mock()
-    connection._client.build_image_message = Mock(return_value=mock_image_msg)
-    connection._client.send_message = Mock()
+    client = _mock_neonize_client()
+    client.build_image_message = Mock(return_value=mock_image_msg)
+    connection._client = client
 
     with patch(MOCK_TARGET, mock_dispatch):
         connection._outgoing_queue = Mock()
         await connection._handle_agent_trigger(chat_jid)
 
     # Image sent via Neonize
-    connection._client.send_message.assert_called_once_with(
+    client.send_message.assert_called_once_with(
         connection._build_jid(chat_jid), message=mock_image_msg
     )
     # Text segments still sent via outgoing queue
@@ -597,14 +606,15 @@ async def test_image_only_reply(
 
     mock_dispatch = AsyncMock(return_value=_make_result(f"<reply>{img}</reply>"))
     mock_image_msg = Mock()
-    connection._client.build_image_message = Mock(return_value=mock_image_msg)
-    connection._client.send_message = Mock()
+    client = _mock_neonize_client()
+    client.build_image_message = Mock(return_value=mock_image_msg)
+    connection._client = client
 
     with patch(MOCK_TARGET, mock_dispatch):
         connection._outgoing_queue = Mock()
         await connection._handle_agent_trigger(chat_jid)
 
-    connection._client.send_message.assert_called_once()
+    client.send_message.assert_called_once()
     connection._outgoing_queue.send.assert_not_called()
 
 
@@ -622,15 +632,15 @@ async def test_nonexistent_image_path_sent_as_text(
             "<reply>See /tmp/nonexistent_xyz12345.png for details</reply>"
         )
     )
-    connection._client.build_image_message = Mock()
-    connection._client.send_message = Mock()
+    client = _mock_neonize_client()
+    connection._client = client
 
     with patch(MOCK_TARGET, mock_dispatch):
         connection._outgoing_queue = Mock()
         await connection._handle_agent_trigger(chat_jid)
 
     # No image sent — file doesn't exist
-    connection._client.send_message.assert_not_called()
+    client.send_message.assert_not_called()
     # Text (including the path string) is sent normally
     connection._outgoing_queue.send.assert_called_once()
     sent_text = connection._outgoing_queue.send.call_args[0][2]
@@ -667,6 +677,44 @@ def _make_agent_db(tmp_path: Path, agent_name: str) -> sqlite3.Connection:
             );""")
     )
     return db
+
+
+@pytest.mark.asyncio
+async def test_remote_image_url_in_reply_downloads_and_sends(
+    db: sqlite3.Connection,
+    connection: WhatsAppConnection,
+) -> None:
+    chat_jid = "123@s.whatsapp.net"
+    _seed_messages(db, chat_jid)
+
+    url = "https://example.com/chart.png"
+    mock_dispatch = AsyncMock(
+        return_value=_make_result(f"<reply>Look:\n![chart]({url})\nDone</reply>")
+    )
+    client = _mock_neonize_client()
+    connection._client = client
+
+    response = Mock()
+    response.read.return_value = b"PNGDATA"
+    response.__enter__ = Mock(return_value=response)
+    response.__exit__ = Mock(return_value=None)
+
+    with (
+        patch(MOCK_TARGET, mock_dispatch),
+        patch(
+            "pykoclaw_whatsapp.connection.urllib.request.urlopen", return_value=response
+        ),
+    ):
+        connection._outgoing_queue = Mock()
+        await connection._handle_agent_trigger(chat_jid)
+
+    client.build_image_message.assert_called_once_with(b"PNGDATA", caption=None)
+    client.send_message.assert_called_once()
+    sent_texts = [
+        call.args[2] for call in connection._outgoing_queue.send.call_args_list
+    ]
+    assert any("Look:" in text for text in sent_texts)
+    assert any("Done" in text for text in sent_texts)
 
 
 def test_delivery_polls_agent_dbs(

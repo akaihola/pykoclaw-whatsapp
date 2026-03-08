@@ -4,7 +4,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pykoclaw_whatsapp.images import detect_image_paths, mime_for_path
+from pykoclaw_whatsapp.images import (
+    IMAGE_URL_MD_RE,
+    detect_image_paths,
+    mime_for_path,
+    mime_for_url,
+)
 
 
 def test_detect_no_paths() -> None:
@@ -64,3 +69,15 @@ def test_mime_for_path_webp() -> None:
 
 def test_mime_for_path_unknown_falls_back() -> None:
     assert mime_for_path(Path("file.bin")) == "application/octet-stream"
+
+
+def test_markdown_image_url_regex_matches() -> None:
+    text = "![chart](https://example.com/assets/chart.png)"
+    match = IMAGE_URL_MD_RE.search(text)
+    assert match is not None
+    assert match.group(1) == "chart"
+    assert match.group(2) == "https://example.com/assets/chart.png"
+
+
+def test_mime_for_url_png() -> None:
+    assert mime_for_url("https://example.com/assets/chart.png") == "image/png"

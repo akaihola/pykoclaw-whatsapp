@@ -81,3 +81,22 @@ def test_image_only(tmp_path: Path) -> None:
     segs = split_segments(str(img))
     assert segs == [ImageSegment(ref=segs[0].ref)]  # type: ignore[union-attr]
     assert isinstance(segs[0], ImageSegment)
+
+
+def test_markdown_image_url_in_middle() -> None:
+    url = "https://example.com/plot.png"
+    segs = split_segments(f"Here:\n![plot]({url})\nDone")
+    assert len(segs) == 3
+    assert isinstance(segs[0], TextSegment)
+    assert isinstance(segs[1], ImageSegment)
+    assert segs[1].ref.kind == "url"
+    assert segs[1].ref.source == url
+    assert isinstance(segs[2], TextSegment)
+
+
+def test_markdown_image_url_not_duplicated_as_text() -> None:
+    url = "https://example.com/plot.png"
+    segs = split_segments(f"![plot]({url})")
+    assert len(segs) == 1
+    assert isinstance(segs[0], ImageSegment)
+    assert segs[0].ref.kind == "url"

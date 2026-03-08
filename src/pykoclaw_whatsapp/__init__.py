@@ -9,7 +9,7 @@ import click
 from pydantic_settings import BaseSettings
 
 from pykoclaw.db import DbConnection
-from pykoclaw.plugins import PykoClawPluginBase
+from pykoclaw.plugins import PykoClawPluginBase, TransformContext
 
 from .config import WhatsAppSettings
 
@@ -37,7 +37,11 @@ class WhatsAppPlugin(PykoClawPluginBase):
 
             from pykoclaw.config import settings
             from pykoclaw.db import init_db
-            from pykoclaw.plugins import run_db_migrations
+            from pykoclaw.plugins import (
+                compose_transformers,
+                load_plugins,
+                run_db_migrations,
+            )
 
             from .connection import WhatsAppConnection
 
@@ -64,7 +68,15 @@ class WhatsAppPlugin(PykoClawPluginBase):
             db.execute("PRAGMA journal_mode=WAL")
 
             plugin = WhatsAppPlugin()
-            run_db_migrations(db, [plugin])
+            all_plugins = load_plugins()
+            run_db_migrations(db, all_plugins)
+            response_transformer = compose_transformers(
+                all_plugins,
+                TransformContext(
+                    channel_prefix="wa",
+                    native_file_extensions=plugin.native_file_extensions(),
+                ),
+            )
 
             mcp_servers = plugin.get_mcp_servers(db, "whatsapp")
 
@@ -83,7 +95,10 @@ class WhatsAppPlugin(PykoClawPluginBase):
                 click.echo(f"  {jid} → {', '.join(names)}")
 
             conn = WhatsAppConnection(
-                db=db, extra_mcp_servers=mcp_servers, routing=routing
+                db=db,
+                extra_mcp_servers=mcp_servers,
+                routing=routing,
+                response_transformer=response_transformer,
             )
             conn.run()
 
@@ -124,6 +139,20 @@ class WhatsAppPlugin(PykoClawPluginBase):
                     mime_type TEXT NOT NULL
                 )"""),
         ]
+
+    def native_file_extensions(self) -> frozenset[str]:
+        return frozenset(
+            {
+                ".png",
+                ".jpg",
+                ".jpeg",
+                ".gif",
+                ".webp",
+                ".svg",
+                ".bmp",
+                ".tiff",
+            }
+        )
 
     def get_config_class(self) -> type[BaseSettings] | None:
         return WhatsAppSettings
