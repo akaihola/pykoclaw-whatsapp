@@ -774,3 +774,76 @@ def test_delivery_polls_agent_dbs(
         "SELECT status FROM delivery_queue WHERE id = 'd1'"
     ).fetchone()
     assert row["status"] == "delivered"
+
+
+# --- system_prompt_addition tests ---
+
+
+def test_system_prompt_addition_appended(
+    db: sqlite3.Connection, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """system_prompt_addition is appended to the built system prompt."""
+    from pykoclaw_whatsapp.config import WhatsAppSettings
+
+    monkeypatch.chdir(tmp_path)
+    config = WhatsAppSettings(trigger_name="Andy")
+    conn = WhatsAppConnection(
+        db=db,
+        config=config,
+        system_prompt_addition="Always use full paths.",
+    )
+
+    from pykoclaw_whatsapp.routing import AgentConfig
+
+    agent = AgentConfig(name="Andy")
+    prompt = conn._build_system_prompt(agent, "123@s.whatsapp.net", is_multi_agent=False)
+    assert "Always use full paths." in prompt
+
+
+def test_system_prompt_addition_not_present_when_none(
+    db: sqlite3.Connection, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When system_prompt_addition is None, the base prompt is unchanged."""
+    from pykoclaw_whatsapp.config import WhatsAppSettings
+
+    monkeypatch.chdir(tmp_path)
+    config = WhatsAppSettings(trigger_name="Andy")
+    conn_without = WhatsAppConnection(db=db, config=config)
+    conn_with_none = WhatsAppConnection(
+        db=db, config=config, system_prompt_addition=None
+    )
+
+    from pykoclaw_whatsapp.routing import AgentConfig
+
+    agent = AgentConfig(name="Andy")
+    jid = "123@s.whatsapp.net"
+    assert conn_without._build_system_prompt(
+        agent, jid, is_multi_agent=False
+    ) == conn_with_none._build_system_prompt(agent, jid, is_multi_agent=False)
+
+
+@pytest.mark.asyncio
+async def test_system_prompt_addition_reaches_dispatch(
+    db: sqlite3.Connection, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """system_prompt_addition ends up in the system_prompt arg passed to dispatch."""
+    from pykoclaw_whatsapp.config import WhatsAppSettings
+
+    monkeypatch.chdir(tmp_path)
+    config = WhatsAppSettings(trigger_name="Andy")
+    conn = WhatsAppConnection(
+        db=db,
+        config=config,
+        system_prompt_addition="Use full paths like `docs/notes.md`.",
+    )
+    conn._client = Mock()
+
+    chat_jid = "123@s.whatsapp.net"
+    _seed_messages(db, chat_jid)
+
+    mock_dispatch = AsyncMock(return_value=_make_result("<reply>Hi</reply>"))
+    with patch(MOCK_TARGET, mock_dispatch):
+        await conn._handle_agent_trigger(chat_jid)
+
+    system_prompt = mock_dispatch.call_args.kwargs["system_prompt"]
+    assert "Use full paths like" in system_prompt
