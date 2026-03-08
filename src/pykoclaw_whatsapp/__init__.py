@@ -38,6 +38,7 @@ class WhatsAppPlugin(PykoClawPluginBase):
             from pykoclaw.config import settings
             from pykoclaw.db import init_db
             from pykoclaw.plugins import (
+                compose_system_prompt_additions,
                 compose_transformers,
                 load_plugins,
                 run_db_migrations,
@@ -99,6 +100,7 @@ class WhatsAppPlugin(PykoClawPluginBase):
                 extra_mcp_servers=mcp_servers,
                 routing=routing,
                 response_transformer=response_transformer,
+                system_prompt_addition=compose_system_prompt_additions(all_plugins),
             )
             conn.run()
 

@@ -93,11 +93,13 @@ class WhatsAppConnection:
         extra_mcp_servers: dict[str, Any] | None = None,
         routing: RoutingConfig | None = None,
         response_transformer: Callable[[str], str] | None = None,
+        system_prompt_addition: str | None = None,
     ) -> None:
         self._config = config or get_config()
         self._db = db
         self._extra_mcp_servers = extra_mcp_servers or {}
         self._response_transformer = response_transformer
+        self._system_prompt_addition = system_prompt_addition
         self._outgoing_queue = OutgoingQueue()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._client: NewClient | None = None
@@ -267,6 +269,8 @@ class WhatsAppConnection:
         # NOTE: hard_mention instruction goes in the user prompt, not here.
         # system_prompt is baked into the session at creation and silently
         # ignored on resume — see .memory/session-resume-system-prompt.md.
+        if self._system_prompt_addition:
+            base += "\n\n" + self._system_prompt_addition
         return base
 
     async def _handle_agent_trigger(
