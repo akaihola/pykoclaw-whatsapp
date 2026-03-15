@@ -176,12 +176,26 @@ class WhatsAppPlugin(PykoClawPluginBase):
         async def send_message(args: dict[str, Any]) -> dict[str, Any]:
             chat_jid = args["chat_jid"]
             text = args["text"]
+            # Log the message in wa_messages for history.
             db.execute(
                 dedent("""\
                     INSERT INTO wa_messages
                         (chat_jid, sender, text, timestamp, is_from_me)
                     VALUES (?, ?, ?, datetime('now'), 1)"""),
                 (chat_jid, "assistant", text),
+            )
+            # Also enqueue for delivery so the WhatsApp connection
+            # actually sends it (essential for ACP/scheduled tasks
+            # which don't have a live neonize client).
+            from pykoclaw.db import enqueue_delivery
+
+            enqueue_delivery(
+                db,
+                task_id="send_message",
+                task_run_log_id=None,
+                conversation=f"wa-{chat_jid}",
+                channel_prefix="wa",
+                message=text,
             )
             db.commit()
             return {
