@@ -17,15 +17,14 @@ from pathlib import Path
 from textwrap import dedent
 from typing import TYPE_CHECKING
 
-from neonize.events import MessageEv
-from neonize.utils.jid import Jid2String
-
 from pykoclaw.db import DbConnection
 
 from .attachments import download_and_store
 
 if TYPE_CHECKING:
     from neonize.client import NewClient
+    from neonize.events import MessageEv
+    from neonize.utils.jid import Jid2String
 
     from .queue import OutgoingQueue
 
@@ -141,6 +140,8 @@ class BatchAccumulator:
 
 def extract_text(msg: MessageEv) -> str | None:
     """Extract text content from a Neonize MessageEv (text + captions only)."""
+    # neonize types are only available at runtime when WhatsApp is active.
+    # Import is deferred to avoid crashing the module when libmagic is missing.
     wa_msg = msg.Message
     if wa_msg.HasField("conversation") and wa_msg.conversation:
         return wa_msg.conversation
@@ -318,6 +319,8 @@ class MessageHandler:
 
     def on_message(self, client: NewClient, event: MessageEv) -> None:
         try:
+            from neonize.utils.jid import Jid2String
+
             info = event.Info
             source = info.MessageSource
             chat_jid = Jid2String(source.Chat)
