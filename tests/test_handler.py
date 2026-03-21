@@ -6,7 +6,7 @@ import asyncio
 import sqlite3
 from pathlib import Path
 from textwrap import dedent
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import Mock
 
 import pytest
 
@@ -286,7 +286,7 @@ def _make_handler(
 
     batch_acc = Mock(spec=BatchAccumulator)
     batch_acc.add = Mock()
-    batch_acc.flush_now = AsyncMock()
+    batch_acc.flush_now = Mock()
 
     handler = MessageHandler(
         db=db,
