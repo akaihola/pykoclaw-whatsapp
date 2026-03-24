@@ -475,6 +475,8 @@ class WhatsAppConnection:
             try:
                 jid = self._build_jid(chat_jid_str)
                 message = delivery.message
+                if self._response_transformer is not None:
+                    message = self._response_transformer(message)
                 if is_multi and agent:
                     message = f"[{agent.name}]: {message}"
                 self._send_message(jid, message)

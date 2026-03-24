@@ -847,3 +847,59 @@ async def test_system_prompt_addition_reaches_dispatch(
 
     system_prompt = mock_dispatch.call_args.kwargs["system_prompt"]
     assert "Use full paths like" in system_prompt
+
+
+# -- Delivery queue: response_transformer must be applied ------------------
+
+
+def test_delivery_queue_applies_response_transformer(
+    db: sqlite3.Connection,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """response_transformer must be applied to queued WhatsApp delivery messages.
+
+    Regression test: queued deliveries bypassed the transformer, so relative
+    Markdown links like [label](relative/path.md) were sent as-is.
+    """
+    from pykoclaw_whatsapp.config import WhatsAppSettings
+
+    monkeypatch.chdir(tmp_path)
+
+    config = WhatsAppSettings(trigger_name="Ressu")
+    transformer_called_with: list[str] = []
+
+    def fake_transformer(text: str) -> str:
+        transformer_called_with.append(text)
+        return text.replace(
+            "[claw trends diary](journals/2026/claw-trends-diary.md)",
+            "[claw trends diary](https://pykofinder.example.com/f/my-knowledge/journals/2026/claw-trends-diary.md)",
+        )
+
+    conn = WhatsAppConnection(
+        db=db,
+        config=config,
+        response_transformer=fake_transformer,
+    )
+    conn._client = Mock()
+
+    # Enqueue a delivery with a relative-path link directly in the primary DB
+    db.execute(
+        dedent("""\
+            INSERT INTO delivery_queue
+                (id, task_id, conversation, channel_prefix, message, status, created_at)
+            VALUES ('d1', 'task-1', 'wa-Ressu-123@s.whatsapp.net', 'wa',
+                    'Report: [claw trends diary](journals/2026/claw-trends-diary.md)',
+                    'pending', '2026-03-23T10:20:00+00:00')""")
+    )
+    db.commit()
+
+    conn._outgoing_queue = Mock()
+    conn._process_pending_deliveries()
+
+    assert transformer_called_with, "response_transformer was never called"
+    conn._outgoing_queue.send.assert_called_once()
+    sent_text = conn._outgoing_queue.send.call_args[0][2]
+    assert "https://pykofinder.example.com/f/my-knowledge/" in sent_text, (
+        f"Transformer not applied; sent: {sent_text!r}"
+    )
